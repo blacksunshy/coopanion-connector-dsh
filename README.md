@@ -28,11 +28,23 @@ DeepSeek Harness（DSH）bundle 插件：Coopanion 桌宠桥接的 Host 半区�
 error: profile "desktop" is managed exclusively by the Electron application
 ```
 
-所以桌面端请在会话里让宿主自己装。直接说：
+所以桌面端在**插件市场**里装，来源填本仓库地址：
 
-> 请使用当前桌面端内置的 `plugin_manager` 安装 `coopanion-connector-dsh`。先核对当前 profile 和是否已有同名插件；已有安装时先报告来源与版本。按该工具支持的操作完成后，告诉我安装结果及是否需要重启。
+```
+https://github.com/blacksunshy/coopanion-connector-dsh
+```
 
-需要固定版本时把包名写成 `coopanion-connector-dsh@<版本>`。装完若界面里没有出现，完全退出客户端（含系统托盘）后重新打开。
+插件市场实际执行的是 `pnpm add https://github.com/blacksunshy/coopanion-connector-dsh`：包取到当前 profile 的 `node_modules` 下（默认 `%USERPROFILE%\.dsh\profiles\desktop`），同时被加进 `dsh.profile.bundles`。这个落点由 DSH 的 profile 决定，不是插件能选的。
+
+**安装期不会执行任何构建脚本**：`dist/index.cjs` 随仓库分发，所以 pnpm 的构建脚本审批（`allowBuilds`）不会介入。遇到这个错误码，说明取到的是带 `prepare` 的早期提交，升级到最新 `main` 再装即可：
+
+```
+[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] … needs to execute build scripts but is not in the "allowBuilds" allowlist
+```
+
+它给出的 `allowBuilds` 键里带着具体 commit 的 tar.gz 地址（`…/tar.gz/<commit>`），每次提交都会变，所以不是一个能长期沿用的配置。
+
+装完若界面里没有出现，完全退出客户端（含系统托盘）后重新打开。
 
 ### Web（`dsh web`）
 
