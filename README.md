@@ -2,7 +2,7 @@
 
 DeepSeek Harness（DSH）bundle 插件：Coopanion 桌宠桥接的 Host 半区。它在 DSH 已有的 web 服务器上挂一个回环 WebSocket，桌宠连上来获知 DSH 正在做什么；你说的话也走同一条线路，被提交进拥有该桌宠的那段对话。
 
-另一半（桌宠侧）是 Coopanion 的 [`cortico-world-fatfish`](https://github.com/Pal-AI-Lab/Coopanion/tree/main/packages/cortico-world-fatfish) 扩展，两个包分开装、分开演进。
+另一半（桌宠侧）是独立仓库的 [`cortico-world-fatfish`](https://github.com/blacksunshy/coopanion-fatfish) 扩展，两个包分开装、分开演进。
 
 ## 工作方式
 
@@ -61,7 +61,7 @@ pnpm run build          # 产出 dist/index.cjs
 
 - `GET http://127.0.0.1:<DSH 端口>/coopanion/status` → `{"ok":true,"v":1,"pet":…,"session":…}`
 - `%APPDATA%\@deepseek-ai\dsh-desktop\logs\coopanion-bridge.jsonl` 多写一行，写明加载它的进程——这一行是"插件被加载"的证据；没有它说明没加载上，与"加载了但桌宠没连上"是两回事
-- **Coopanion 侧还要装 [`cortico-world-fatfish`](https://github.com/Pal-AI-Lab/Coopanion/tree/main/packages/cortico-world-fatfish)**，否则桥建起来但没有桌宠来连
+- **Coopanion 侧还要装 [`cortico-world-fatfish`](https://github.com/blacksunshy/coopanion-fatfish)**，否则桥建起来但没有桌宠来连
 
 ### 发布到 npm 的要点
 
