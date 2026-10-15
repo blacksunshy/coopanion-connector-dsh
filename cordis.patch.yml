@@ -1,0 +1,17 @@
+# ============================================================================
+# coopanion-connector-dsh —— DSH bundle patch
+# ============================================================================
+# 这是桥接的"挂载声明"。DSH 启动时按 bundle 层栈叠加各插件 patch，
+# 本文件把 Host 侧桥接行插入 profile 的配置树。
+#
+# 安装方式（web 与 desktop 两种 profile 都可）：
+#   dsh plugin --profile desktop add link:<本目录绝对路径>
+# 或从已构建的目录安装：
+#   dsh plugin --profile desktop add <本目录绝对路径>
+#
+# 行名必须与 package.json 的 name 一致：DSH 按它解析到构建产物 dist/index.js。
+# ============================================================================
+
+- insert:
+    - id: coopanion-connector-dsh
+      name: coopanion-connector-dsh

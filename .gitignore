@@ -1,0 +1,3 @@
+# 忽略构建产物与依赖
+node_modules/
+dist/

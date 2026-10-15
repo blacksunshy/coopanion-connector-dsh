@@ -1,0 +1,53 @@
+{
+  "name": "coopanion-connector-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bridge between the Coopanion desktop pet and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it",
+  "author": "Pal AI Lab",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blacksunshy/coopanion-connector-dsh.git"
+  },
+  "keywords": [
+    "coopanion",
+    "dsh",
+    "deepseek-harness",
+    "desktop-pet",
+    "bridge"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.cjs",
+  "sideEffects": true,
+  "exports": {
+    ".": "./dist/index.cjs"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

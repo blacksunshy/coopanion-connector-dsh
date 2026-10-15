@@ -1,0 +1,3 @@
+# esbuild needs its install script to place the platform binary; pnpm 10+ blocks it by default.
+allowBuilds:
+  esbuild: true
