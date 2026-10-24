@@ -13,3 +13,4 @@
 - insert:
     - id: coopanion-connector-dsh
       name: coopanion-connector-dsh
+      required: false

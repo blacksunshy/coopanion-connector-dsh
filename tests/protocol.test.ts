@@ -114,6 +114,21 @@ describe('which conversation the pet speaks into', () => {
   it('is nobody when no conversation is open', () => {
     expect(new AgentRegistry().facts()).toBeNull();
   });
+
+  it('can be pointed at a specific live session by the pet', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    // newest wins by default
+    expect(agents.ownerSession).toBe('b');
+    // the pet switches to an older one
+    expect(agents.setOwner('a')).toBe(true);
+    expect(agents.ownerSession).toBe('a');
+    expect(agents.facts()).toMatchObject({ session: 'a' });
+    // a disposed / unknown session is refused, owner unchanged
+    expect(agents.setOwner('gone')).toBe(false);
+    expect(agents.ownerSession).toBe('a');
+  });
 });
 
 describe('a session event', () => {

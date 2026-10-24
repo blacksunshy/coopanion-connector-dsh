@@ -53,6 +53,17 @@ export class AgentRegistry {
     return this.ownerId;
   }
 
+  /**
+   * Lets the pet point its words at a specific live session, instead of always following the
+   * newest one. Returns false when the session is not live (already disposed, never created, or a
+   * subagent), so the caller can refuse the switch.
+   */
+  setOwner(id: string): boolean {
+    if (!this.live.has(id)) return false;
+    this.ownerId = id;
+    return true;
+  }
+
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts(): AgentFacts | null {
     const agent = this.owner;

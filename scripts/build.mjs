@@ -10,8 +10,14 @@ import { build } from 'esbuild';
  * takes it directly, and `import()` interops it).
  *
  * Node builtins stay external. Bundling them inlines `ws`'s own `require('events')` and the Host
- * then dies with `Dynamic require of "events" is not supported`. `ws` itself is left to the profile
- * that installs this package (pnpm hoists it beside the plugin).
+ * then dies with `Dynamic require of "events" is not supported`.
+ *
+ * `ws` is bundled in, NOT left external. A `link:` install (pnpm just symlinks the directory, it
+ * does not run install inside it) leaves no `node_modules/ws` beside the plugin, and DSH's module
+ * interception does not route bare `ws` for a linked bundle. The result is `Cannot find module 'ws'`
+ * at import time and the plugin never activates. Bundling ws (~200 KB) makes the artifact
+ * self-contained regardless of how it was installed; `ws` stays in `dependencies` for type checks
+ * and is also declared as a peerDependency so a profile that already has it can reuse it.
  */
 const builtins = [...builtinModules, ...builtinModules.map((name) => `node:${name}`)];
 
@@ -22,7 +28,7 @@ await build({
   format: 'cjs',
   platform: 'node',
   target: 'node22',
-  external: ['ws', ...builtins],
+  external: [...builtins],
   sourcemap: false,
   logLevel: 'info',
 });

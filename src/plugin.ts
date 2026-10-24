@@ -192,6 +192,7 @@ export default {
             return `DSH refused the message: ${(err as Error).message}`;
           }
         },
+        pick: (session) => (agents.setOwner(String(session)) ? null : 'no such open conversation'),
         log,
       });
       hub = pet;
@@ -227,8 +228,8 @@ export default {
       agents.add(String(id), agent as never);
     }) as never);
 
-    root.on('session/disposed', ((payload: { session?: { id?: string } }) => {
-      const id = payload?.session?.id;
+    root.on('session/disposed', ((session: { id?: string }) => {
+      const id = session?.id;
       if (id) agents.remove(String(id));
     }) as never);
 

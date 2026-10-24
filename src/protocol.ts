@@ -36,6 +36,12 @@ export type PetFrame =
   | { t: 'hello'; v: number; name: string }
   /** A person's words, submitted to the owning agent. `id` is echoed in `accepted`/`refused`. */
   | { t: 'say'; id: string; text: string; from: string }
+  /**
+   * Switch the conversation the pet speaks into. The newest live session is the default; a person
+   * may point the pet at another open session (for example after archiving the current one). The
+   * Host refuses a session that is not live with a `refused` frame.
+   */
+  | { t: 'pick'; session: string }
   | { t: 'ping' };
 
 /** Host→pet answers to a `say`. */
@@ -62,6 +68,9 @@ export function parsePetFrame(raw: string): PetFrame | null {
     }
     case 'ping':
       return { t: 'ping' };
+    case 'pick':
+      if (typeof frame.session !== 'string' || !frame.session) return null;
+      return { t: 'pick', session: frame.session.slice(0, 128) };
     default:
       return null;
   }

@@ -25,6 +25,8 @@ export interface PetHubOptions {
   welcome(): { session: string; cwd: string; model: string } | null;
   /** A person's words arrived; resolve to the refusal reason, or null when they were submitted. */
   say(text: string, from: string): Promise<string | null>;
+  /** The pet asked to switch the owning session; return null to accept, or the refusal reason. */
+  pick?(session: string): string | null;
   log(level: 'info' | 'warn', text: string): void;
   /** The upgrade handler of another server, when the caller owns one (tests, embedding). */
   server?: WebSocketServer;
@@ -115,6 +117,13 @@ export class PetHub {
         }
         case 'ping':
           return;
+        case 'pick': {
+          const reason = this.opts.pick?.(frame.session) ?? 'this Host does not support session switching';
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(reason === null ? { t: 'picked', session: frame.session } : { t: 'refused', reason }));
+          }
+          return;
+        }
       }
     });
     ws.on('close', () => {
