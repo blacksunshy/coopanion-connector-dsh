@@ -3925,7 +3925,8 @@ var PetHub = class {
         case "ping":
           return;
         case "pick": {
-          const reason2 = this.opts.pick?.(frame.session) ?? "this Host does not support session switching";
+          const pick = this.opts.pick;
+          const reason2 = pick === void 0 ? "this Host does not support session switching" : pick(frame.session);
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reason2 === null ? { t: "picked", session: frame.session } : { t: "refused", reason: reason2 }));
           }
@@ -3950,18 +3951,32 @@ var PetHub = class {
 // src/session-watch.ts
 var AgentRegistry = class {
   live = /* @__PURE__ */ new Map();
+  /** model 按 session 缓存，因为模型是请求级属性而非 agent 常驻属性。 */
+  modelCache = /* @__PURE__ */ new Map();
   ownerId = null;
   /** Keyed by session id, which is what `agent/created` and `session/disposed` agree on. */
   add(id, agent) {
-    this.live.set(id, agent);
-    this.ownerId = id;
+    if (!this.isSubagent(agent)) {
+      this.live.set(id, agent);
+      this.ownerId = id;
+    } else {
+      this.live.set(id, agent);
+    }
   }
   remove(id) {
     this.live.delete(id);
+    this.modelCache.delete(id);
     if (this.ownerId === id) this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    while (this.ownerId !== null) {
+      const owner = this.live.get(this.ownerId);
+      if (owner && !this.isSubagent(owner)) break;
+      this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    }
   }
   get owner() {
-    return this.ownerId === null ? null : this.live.get(this.ownerId) ?? null;
+    if (this.ownerId === null) return null;
+    const a = this.live.get(this.ownerId);
+    return a && !this.isSubagent(a) ? a : null;
   }
   get ownerSession() {
     return this.ownerId;
@@ -3972,26 +3987,37 @@ var AgentRegistry = class {
    * subagent), so the caller can refuse the switch.
    */
   setOwner(id) {
-    if (!this.live.has(id)) return false;
+    const agent = this.live.get(id);
+    if (!agent) return false;
+    if (this.isSubagent(agent)) return false;
     this.ownerId = id;
     return true;
+  }
+  /** 记录某会话最近一次 request/header 里看到的模型名。 */
+  rememberModel(id, model) {
+    if (model) this.modelCache.set(id, model);
   }
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts() {
     const agent = this.owner;
     if (!agent) return null;
-    if (agent.session.parent) return null;
+    const session = agent.session;
+    const header = session.header;
     return {
-      session: String(agent.session.id ?? ""),
-      cwd: String(agent.session.cwd ?? ""),
-      model: this.modelOf(agent)
+      session: String(session.id ?? ""),
+      cwd: String(header?.cwd ?? ""),
+      model: this.modelOf(String(session.id ?? ""))
     };
   }
-  modelOf(agent) {
-    const model = agent.model;
-    if (typeof model === "string") return model;
-    const source = agent.source;
-    return typeof source?.model === "string" ? source.model : "";
+  modelOf(sessionId) {
+    return this.modelCache.get(sessionId) ?? "";
+  }
+  isSubagent(agent) {
+    const header = agent.session.header;
+    if (!header) return false;
+    if (typeof header.parentSession === "string" && header.parentSession.length > 0) return true;
+    if (header.origin === "subagent") return true;
+    return false;
   }
 };
 function noticeOf(sessionId, event) {
@@ -4135,7 +4161,6 @@ var plugin_default = {
       const agent = payload?.agent;
       const id = agent?.session?.id;
       if (!agent || !id) return;
-      if (agent.session?.parent) return;
       agents.add(String(id), agent);
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);
@@ -4152,8 +4177,14 @@ var plugin_default = {
     }));
     root.on("session/event", ((session, event) => {
       const id = String(session?.id ?? "");
-      if (!id || agents.ownerSession !== id) return;
+      if (!id) return;
       const data = event?.data ?? {};
+      if (event?.type === "request/header") {
+        const model = data.header?.config?.model;
+        if (typeof model === "string" && model) agents.rememberModel(id, model);
+        return;
+      }
+      if (agents.ownerSession !== id) return;
       if (event?.type === "user/message") {
         userTemplate = data.message ?? data;
         return;

@@ -18,9 +18,16 @@ export interface AgentFacts {
   model: string;
 }
 
+/** DSH's session header: where cwd and subagent flags actually live. */
+interface SessionHeader {
+  cwd?: string;
+  parentSession?: string;
+  origin?: string;
+}
+
 /** One live agent, as much of it as this plugin touches. */
 export interface LiveAgent {
-  session: { id?: string; cwd?: string; parent?: unknown };
+  session: { id?: string; header?: SessionHeader };
   /** Submits context and wakes the agent; resolves once the message is queued. */
   followup?(message: unknown): void;
   /** Submits context without waking the agent. */
@@ -32,21 +39,37 @@ export interface LiveAgent {
 /** The newest agent wins; a subagent never wins. */
 export class AgentRegistry {
   private readonly live = new Map<string, LiveAgent>();
+  /** model 按 session 缓存，因为模型是请求级属性而非 agent 常驻属性。 */
+  private readonly modelCache = new Map<string, string>();
   private ownerId: string | null = null;
 
   /** Keyed by session id, which is what `agent/created` and `session/disposed` agree on. */
   add(id: string, agent: LiveAgent): void {
-    this.live.set(id, agent);
-    this.ownerId = id;
+    // 子代理不应成为 owner；但先加入 live Map（万一主会话晚到了，之后还能被正确移除）
+    if (!this.isSubagent(agent)) {
+      this.live.set(id, agent);
+      this.ownerId = id;
+    } else {
+      this.live.set(id, agent);
+    }
   }
 
   remove(id: string): void {
     this.live.delete(id);
+    this.modelCache.delete(id);
     if (this.ownerId === id) this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    // owner 若变成子代理，跳过去找下一个非子代理
+    while (this.ownerId !== null) {
+      const owner = this.live.get(this.ownerId);
+      if (owner && !this.isSubagent(owner)) break;
+      this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    }
   }
 
   get owner(): LiveAgent | null {
-    return this.ownerId === null ? null : this.live.get(this.ownerId) ?? null;
+    if (this.ownerId === null) return null;
+    const a = this.live.get(this.ownerId);
+    return a && !this.isSubagent(a) ? a : null;
   }
 
   get ownerSession(): string | null {
@@ -59,28 +82,41 @@ export class AgentRegistry {
    * subagent), so the caller can refuse the switch.
    */
   setOwner(id: string): boolean {
-    if (!this.live.has(id)) return false;
+    const agent = this.live.get(id);
+    if (!agent) return false;
+    if (this.isSubagent(agent)) return false;
     this.ownerId = id;
     return true;
+  }
+
+  /** 记录某会话最近一次 request/header 里看到的模型名。 */
+  rememberModel(id: string, model: string): void {
+    if (model) this.modelCache.set(id, model);
   }
 
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts(): AgentFacts | null {
     const agent = this.owner;
     if (!agent) return null;
-    if (agent.session.parent) return null;
+    const session = agent.session;
+    const header = session.header;
     return {
-      session: String(agent.session.id ?? ''),
-      cwd: String(agent.session.cwd ?? ''),
-      model: this.modelOf(agent),
+      session: String(session.id ?? ''),
+      cwd: String(header?.cwd ?? ''),
+      model: this.modelOf(String(session.id ?? '')),
     };
   }
 
-  private modelOf(agent: LiveAgent): string {
-    const model = (agent as { model?: unknown }).model;
-    if (typeof model === 'string') return model;
-    const source = (agent as { source?: { model?: unknown } }).source;
-    return typeof source?.model === 'string' ? source.model : '';
+  private modelOf(sessionId: string): string {
+    return this.modelCache.get(sessionId) ?? '';
+  }
+
+  private isSubagent(agent: LiveAgent): boolean {
+    const header = agent.session.header;
+    if (!header) return false;
+    if (typeof header.parentSession === 'string' && header.parentSession.length > 0) return true;
+    if (header.origin === 'subagent') return true;
+    return false;
   }
 }
 

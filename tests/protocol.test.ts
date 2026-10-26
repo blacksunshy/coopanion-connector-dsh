@@ -90,7 +90,9 @@ describe('a turn-ending reason', () => {
 
 describe('which conversation the pet speaks into', () => {
   /** A live agent shaped like DSH's, with only the session the registry reads. */
-  const agentOf = (id: string, parent?: unknown): LiveAgent => ({ session: { id, cwd: `/w/${id}`, ...(parent ? { parent } : {}) } });
+  const agentOf = (id: string, opts?: { parentSession?: string; origin?: string }): LiveAgent => ({
+    session: { id, header: { cwd: `/w/${id}`, ...opts } },
+  });
 
   it('is the newest one', () => {
     const agents = new AgentRegistry();

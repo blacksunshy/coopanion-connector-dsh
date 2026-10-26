@@ -40,7 +40,7 @@ interface DshResponse {
 /** `agent/created` payload. */
 interface CreatedPayload {
   agent?: {
-    session?: { id?: string; cwd?: string; parent?: unknown };
+    session?: { id?: string; header?: { cwd?: string; parentSession?: string; origin?: string } };
     followup?(message: unknown): void;
     inject?(message: unknown): void;
   };
@@ -223,8 +223,7 @@ export default {
       const agent = payload?.agent;
       const id = agent?.session?.id;
       if (!agent || !id) return;
-      // A subagent answers nothing the person asked the pet; only the main conversation owns the socket.
-      if (agent.session?.parent) return;
+      // 子代理判断已在 AgentRegistry.add 内部处理（isSubagent），这里不再重复
       agents.add(String(id), agent as never);
       // If the pet is waiting (connected but no session yet), give it a late `ready` now.
       const facts = agents.facts();
@@ -245,8 +244,16 @@ export default {
 
     root.on('session/event', ((session: { id?: string }, event: SessionEventLike) => {
       const id = String(session?.id ?? '');
-      if (!id || agents.ownerSession !== id) return;
+      if (!id) return;
       const data = (event?.data ?? {}) as Record<string, unknown>;
+      // 缓存 model：DSH 每次请求都会发 request/header，里面含 config.model
+      if (event?.type === 'request/header') {
+        const model = (data.header as { config?: { model?: unknown } })?.config?.model;
+        if (typeof model === 'string' && model) agents.rememberModel(id, model);
+        // 即便这个 session 不是 owner，也缓存一下，切过来时能直接读到
+        return;
+      }
+      if (agents.ownerSession !== id) return;
       if (event?.type === 'user/message') {
         userTemplate = data.message ?? data;
         return;
