@@ -1,6 +1,27 @@
 /** Builds the Host half as one CommonJS file that DSH can `require` or `import` from its profile. */
+import { readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * DSH validates a freshly installed plugin by reading `node_modules/<name>/package.json` with
+ * `JSON.parse`. JSON has no byte-order mark, and `JSON.parse` rejects one, so a manifest saved as
+ * "UTF-8 with BOM" makes the whole install roll back with
+ *
+ *   Cannot validate installed package <name>: SyntaxError: Unexpected token '﻿'
+ *
+ * A PowerShell `Get-Content package.json | ConvertTo-Json | Set-Content package.json` round trip is
+ * the usual way such a mark appears. Refuse to build (and therefore refuse to publish) a manifest
+ * that cannot be installed, instead of shipping it and finding out from the user.
+ */
+const manifestPath = fileURLToPath(new URL('../package.json', import.meta.url));
+const manifestBytes = readFileSync(manifestPath);
+if (manifestBytes[0] === 0xef && manifestBytes[1] === 0xbb && manifestBytes[2] === 0xbf) {
+  throw new Error(
+    `${manifestPath} starts with a UTF-8 byte-order mark, which JSON.parse rejects; ` +
+      'DSH would refuse the installed package. Run "node scripts/fix-manifest-encoding.mjs" and rebuild.',
+  );
+}
 
 /**
  * CommonJS, not ESM. The Host loads a profile plugin through its own module table, and a `.js` file
@@ -20,6 +41,10 @@ import { build } from 'esbuild';
  * and is also declared as a peerDependency so a profile that already has it can reuse it.
  */
 const builtins = [...builtinModules, ...builtinModules.map((name) => `node:${name}`)];
+
+// Loaded after the manifest guard above, so a manifest DSH cannot parse is reported by name instead
+// of surfacing as a bundler error.
+const { build } = await import('esbuild');
 
 await build({
   entryPoints: ['src/index.ts'],
