@@ -21,7 +21,12 @@ export const PROTOCOL_VERSION = 1;
 const IDLE_PING_MS = 30_000;
 
 export interface PetHubOptions {
-  /** Called once per accepted connection, before it is used. Return null to refuse. */
+  /**
+   * The current owning agent's facts, or null when no conversation is open yet.
+   * The pet connects first and waits in a "bound = false" state until facts become available;
+   * when they do, the Host sends a late `ready` frame. This lets the pet connect before any
+   * conversation has been created (common on `dsh web --no-open` and other CLI paths).
+   */
   welcome(): { session: string; cwd: string; model: string } | null;
   /** A person's words arrived; resolve to the refusal reason, or null when they were submitted. */
   say(text: string, from: string): Promise<string | null>;
@@ -36,6 +41,9 @@ export class PetHub {
   private readonly wss: WebSocketServer;
   private readonly ownsServer: boolean;
   private connection: WebSocket | null = null;
+  /** True after this.connection has received its first `ready` frame. A pet in waiting state may
+   *  have an open connection but has not yet been told which session to speak into. */
+  private bound: boolean = false;
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly opts: PetHubOptions) {
@@ -49,21 +57,41 @@ export class PetHub {
     return this.connection !== null && this.connection.readyState === this.connection.OPEN;
   }
 
-  /** The upgrade route `webServer.registerUpgrade` takes. */
+  /** Whether an open connection has been bound to a DSH conversation (has received `ready`). */
+  get boundState(): boolean {
+    return this.bound && this.connected;
+  }
+
+  /** The upgrade route `webServer.registerUpgrade` takes.
+   *
+   *  Always accepts the HTTP upgrade: whether a conversation exists or not, the pet gets an open
+   *  socket. When no conversation exists yet it lands in waiting state and receives a late `ready`
+   *  later via `notifyBound()`. */
   readonly upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
-    // A refusal answers the handshake, so the pet learns why instead of seeing a reset socket.
-    if (!this.opts.welcome()) {
-      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-      return;
-    }
     this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
   };
 
-  /** A notice to the pet; false when nobody is listening. */
+  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session. */
   send(frame: HostFrame): boolean {
-    if (!this.connected) return false;
+    if (!this.connected || !this.bound) return false;
     this.connection!.send(JSON.stringify(frame));
     return true;
+  }
+
+  /** Tells the pet the owning conversation has appeared or changed; sends `ready` if the pet is waiting. */
+  notifyBound(facts: { session: string; cwd: string; model: string }): void {
+    if (!this.connected) return;
+    this.opts.log('info', `DSH bridge bound to session ${facts.session}`);
+    this.connection!.send(JSON.stringify({ t: 'ready', v: PROTOCOL_VERSION, ...facts } satisfies HostFrame));
+    this.bound = true;
+  }
+
+  /** Tells the pet the owning conversation is gone (disposed / subagent filtered out).
+   *  Resets bound so subsequent `send()` calls are dropped and the caller may re-bind later. */
+  notifyUnbound(): void {
+    if (!this.connected) return;
+    this.bound = false;
+    this.connection!.send(JSON.stringify({ t: 'error', text: 'owning conversation disposed, waiting for a new one' } satisfies HostFrame));
   }
 
   close(): void {
@@ -81,6 +109,7 @@ export class PetHub {
   private accept(ws: WebSocket): void {
     this.connection?.close(4000, 'replaced');
     this.connection = ws;
+    this.bound = false;
     let greeted = false;
     ws.on('message', (data, isBinary) => {
       if (isBinary) return;
@@ -99,12 +128,14 @@ export class PetHub {
           }
           greeted = true;
           const welcome = this.opts.welcome();
-          if (!welcome) {
-            ws.close(4003, 'no session');
-            return;
+          if (welcome) {
+            this.bound = true;
+            this.opts.log('info', `Coopanion pet "${frame.name}" connected`);
+            ws.send(JSON.stringify({ t: 'ready', v: PROTOCOL_VERSION, ...welcome } satisfies HostFrame));
+          } else {
+            this.opts.log('info', `Coopanion pet "${frame.name}" connected, waiting for a conversation`);
+            // No `ready` yet — notifyBound() will send one when the caller has facts.
           }
-          this.opts.log('info', `Coopanion pet "${frame.name}" connected`);
-          ws.send(JSON.stringify({ t: 'ready', v: PROTOCOL_VERSION, ...welcome } satisfies HostFrame));
           return;
         }
         case 'say': {

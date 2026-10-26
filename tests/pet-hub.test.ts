@@ -99,12 +99,39 @@ describe('a pet connection', () => {
     expect(await closed(socket)).toBe(4001);
   });
 
-  it('cannot connect when no conversation is open', async () => {
-    const { url } = await listening({ welcome: () => null });
-    const socket = new WebSocket(url);
-    const failure = new Promise<void>((done) => socket.once('error', () => done()));
-    await failure;
-    expect(socket.readyState).not.toBe(WebSocket.OPEN);
+  it('waits for a conversation when none is open yet', async () => {
+    const facts = { session: 'session-1', cwd: '/work', model: 'deepseek-flash' };
+    const hub = new PetHub({
+      welcome: () => null,
+      say: async () => null,
+      log: () => {},
+    });
+    const http = createServer();
+    const wss = new WebSocketServer({ noServer: true });
+    http.on('upgrade', hub.upgrade);
+    await new Promise<void>((done) => http.listen(0, '127.0.0.1', () => done()));
+    const { port } = http.address() as AddressInfo;
+    open.push({ hub, http, wss });
+
+    const socket = new WebSocket(`ws://127.0.0.1:${port}${PET_PATH}`);
+    await new Promise<void>((done, fail) => {
+      socket.once('open', () => done());
+      socket.once('error', fail);
+    });
+    // Socket stays open (HTTP 101 was sent) — the old behaviour was a 503 refusal here.
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+
+    socket.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'patient-pet' }));
+    // No `ready` arrives yet; poll until we confirm none is coming within 200ms.
+    let noFrame = true;
+    socket.once('message', () => { noFrame = false; });
+    await new Promise<void>((done) => setTimeout(done, 200));
+    expect(noFrame).toBe(true);
+
+    // Now a conversation appears; notifyBound sends the late `ready`.
+    hub.notifyBound(facts);
+    const ready = await next(socket);
+    expect(ready).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1', model: 'deepseek-flash' });
   });
 });
 

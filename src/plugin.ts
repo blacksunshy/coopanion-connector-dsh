@@ -226,11 +226,21 @@ export default {
       // A subagent answers nothing the person asked the pet; only the main conversation owns the socket.
       if (agent.session?.parent) return;
       agents.add(String(id), agent as never);
+      // If the pet is waiting (connected but no session yet), give it a late `ready` now.
+      const facts = agents.facts();
+      if (facts && hub && hub.connected) hub.notifyBound(facts);
     }) as never);
 
     root.on('session/disposed', ((session: { id?: string }) => {
       const id = session?.id;
+      const wasOwner = id && agents.ownerSession === id;
       if (id) agents.remove(String(id));
+      // If the disposed session was the owner, the pet may need re-binding or unbinding.
+      if (wasOwner && hub && hub.connected) {
+        const facts = agents.facts();
+        if (facts) hub.notifyBound(facts);    // a new owner is available
+        else hub.notifyUnbound();              // no owner left
+      }
     }) as never);
 
     root.on('session/event', ((session: { id?: string }, event: SessionEventLike) => {

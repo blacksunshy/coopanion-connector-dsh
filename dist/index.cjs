@@ -3834,23 +3834,44 @@ var PetHub = class {
   wss;
   ownsServer;
   connection = null;
+  /** True after this.connection has received its first `ready` frame. A pet in waiting state may
+   *  have an open connection but has not yet been told which session to speak into. */
+  bound = false;
   timer;
   get connected() {
     return this.connection !== null && this.connection.readyState === this.connection.OPEN;
   }
-  /** The upgrade route `webServer.registerUpgrade` takes. */
+  /** Whether an open connection has been bound to a DSH conversation (has received `ready`). */
+  get boundState() {
+    return this.bound && this.connected;
+  }
+  /** The upgrade route `webServer.registerUpgrade` takes.
+   *
+   *  Always accepts the HTTP upgrade: whether a conversation exists or not, the pet gets an open
+   *  socket. When no conversation exists yet it lands in waiting state and receives a late `ready`
+   *  later via `notifyBound()`. */
   upgrade = (req, socket, head) => {
-    if (!this.opts.welcome()) {
-      socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-      return;
-    }
     this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
   };
-  /** A notice to the pet; false when nobody is listening. */
+  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session. */
   send(frame) {
-    if (!this.connected) return false;
+    if (!this.connected || !this.bound) return false;
     this.connection.send(JSON.stringify(frame));
     return true;
+  }
+  /** Tells the pet the owning conversation has appeared or changed; sends `ready` if the pet is waiting. */
+  notifyBound(facts) {
+    if (!this.connected) return;
+    this.opts.log("info", `DSH bridge bound to session ${facts.session}`);
+    this.connection.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...facts }));
+    this.bound = true;
+  }
+  /** Tells the pet the owning conversation is gone (disposed / subagent filtered out).
+   *  Resets bound so subsequent `send()` calls are dropped and the caller may re-bind later. */
+  notifyUnbound() {
+    if (!this.connected) return;
+    this.bound = false;
+    this.connection.send(JSON.stringify({ t: "error", text: "owning conversation disposed, waiting for a new one" }));
   }
   close() {
     clearInterval(this.timer);
@@ -3865,6 +3886,7 @@ var PetHub = class {
   accept(ws) {
     this.connection?.close(4e3, "replaced");
     this.connection = ws;
+    this.bound = false;
     let greeted = false;
     ws.on("message", (data, isBinary) => {
       if (isBinary) return;
@@ -3883,12 +3905,13 @@ var PetHub = class {
           }
           greeted = true;
           const welcome = this.opts.welcome();
-          if (!welcome) {
-            ws.close(4003, "no session");
-            return;
+          if (welcome) {
+            this.bound = true;
+            this.opts.log("info", `Coopanion pet "${frame.name}" connected`);
+            ws.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...welcome }));
+          } else {
+            this.opts.log("info", `Coopanion pet "${frame.name}" connected, waiting for a conversation`);
           }
-          this.opts.log("info", `Coopanion pet "${frame.name}" connected`);
-          ws.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...welcome }));
           return;
         }
         case "say": {
@@ -4114,10 +4137,18 @@ var plugin_default = {
       if (!agent || !id) return;
       if (agent.session?.parent) return;
       agents.add(String(id), agent);
+      const facts = agents.facts();
+      if (facts && hub && hub.connected) hub.notifyBound(facts);
     }));
     root.on("session/disposed", ((session) => {
       const id = session?.id;
+      const wasOwner = id && agents.ownerSession === id;
       if (id) agents.remove(String(id));
+      if (wasOwner && hub && hub.connected) {
+        const facts = agents.facts();
+        if (facts) hub.notifyBound(facts);
+        else hub.notifyUnbound();
+      }
     }));
     root.on("session/event", ((session, event) => {
       const id = String(session?.id ?? "");

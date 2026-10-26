@@ -140,12 +140,19 @@ describe('the plugin as DSH loads it', () => {
     expect(frames[0]).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1' });
   });
 
-  it('refuses a pet before any conversation is open', async () => {
-    const { connect } = await loaded();
-    const failed = new Promise<void>((done) => {
-      void connect().catch(() => done());
-    });
-    await failed;
+  it('accepts a pet before any conversation is open, then sends ready when one appears', async () => {
+    const { emit, connect } = await loaded();
+    const { socket, frames, send } = await connect();
+    // Socket opens (HTTP 101) — old behaviour was a 503 refusal here.
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    // No `ready` yet (no agent/created event fired).
+    await new Promise<void>((done) => setTimeout(done, 200));
+    expect(frames).toEqual([]);
+    // Now a conversation appears — plugin should fire notifyBound internally.
+    emit('agent/created', { agent: agentOf('session-1') });
+    await until(() => frames.length > 0);
+    expect(frames[0]).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1' });
   });
 });
 
