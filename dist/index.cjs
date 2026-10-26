@@ -3734,7 +3734,7 @@ module.exports = __toCommonJS(index_exports);
 
 // src/plugin.ts
 var import_node_crypto = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 
 // node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -4041,6 +4041,135 @@ function reason(value) {
   return typeof kind === "string" ? kind : "completed";
 }
 
+// src/update.ts
+var import_node_child_process = require("node:child_process");
+var import_node_fs = require("node:fs");
+var import_node_os = require("node:os");
+var import_node_path = require("node:path");
+var REPO_OWNER = "blacksunshy";
+var REPO_NAME = "coopanion-connector-dsh";
+var GITHUB_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
+function pkgDir() {
+  const file = typeof __filename === "string" ? __filename : "";
+  if (file) return (0, import_node_path.resolve)((0, import_node_path.dirname)(file), "..");
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    const candidate = (0, import_node_path.join)(dir, "package.json");
+    try {
+      const pkg = JSON.parse((0, import_node_fs.readFileSync)(candidate, "utf8"));
+      if (pkg.name === REPO_NAME) return dir;
+    } catch {
+    }
+    const parent = (0, import_node_path.dirname)(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+function currentVersion() {
+  if ("0.2.4") return "0.2.4";
+  try {
+    const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
+    return pkg.version ?? "0.0.0-dev";
+  } catch {
+    return "0.0.0-dev";
+  }
+}
+function isNewer(latest, current) {
+  const parse = (s) => s.replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const [a1, a2, a3] = parse(latest);
+  const [b1, b2, b3] = parse(current);
+  if (a1 !== b1) return a1 > b1;
+  if (a2 !== b2) return a2 > b2;
+  return a3 > b3;
+}
+async function checkUpdate() {
+  const cur = currentVersion();
+  try {
+    const res = await fetch(`${GITHUB_API}/releases/latest`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": `${REPO_NAME}/${cur}` },
+      signal: AbortSignal.timeout(8e3)
+    });
+    if (!res.ok) {
+      return { ok: false, current: cur, latest: "", hasUpdate: false, releaseUrl: "", error: `HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    const latest = data.tag_name.replace(/^v/, "");
+    return {
+      ok: true,
+      current: cur,
+      latest,
+      hasUpdate: isNewer(latest, cur),
+      releaseUrl: data.html_url
+    };
+  } catch (err) {
+    return { ok: false, current: cur, latest: "", hasUpdate: false, releaseUrl: "", error: err.message };
+  }
+}
+async function performUpdate() {
+  const cur = currentVersion();
+  const check = await checkUpdate();
+  if (!check.ok || !check.hasUpdate) {
+    return { ok: false, from: cur, to: check.latest, error: check.error ?? "no newer release found", needsRestart: false };
+  }
+  const target = pkgDir();
+  const tag = `v${check.latest}`;
+  const tarballUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/tags/${tag}.tar.gz`;
+  const workDir = (0, import_node_path.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-${Date.now()}`);
+  (0, import_node_fs.mkdirSync)(workDir, { recursive: true });
+  const tarPath = (0, import_node_path.join)(workDir, "src.tar.gz");
+  const extractDir = (0, import_node_path.join)(workDir, "extract");
+  try {
+    const res = await fetch(tarballUrl, { signal: AbortSignal.timeout(3e4) });
+    if (!res.ok || !res.body) {
+      return { ok: false, from: cur, to: check.latest, error: `download failed: HTTP ${res.status}`, needsRestart: false };
+    }
+    (0, import_node_fs.writeFileSync)(tarPath, Buffer.from(await res.arrayBuffer()));
+    (0, import_node_fs.mkdirSync)(extractDir, { recursive: true });
+    (0, import_node_child_process.execFileSync)("tar", ["-xzf", tarPath, "-C", extractDir], { stdio: "pipe" });
+    const entries = (0, import_node_fs.readdirSync)(extractDir);
+    const srcDir = (0, import_node_path.join)(extractDir, entries[0] ?? "");
+    if (!(0, import_node_fs.existsSync)((0, import_node_path.join)(srcDir, "package.json"))) {
+      return { ok: false, from: cur, to: check.latest, error: "tarball did not contain package.json", needsRestart: false };
+    }
+    const backupDir = (0, import_node_path.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-backup-${Date.now()}`);
+    (0, import_node_fs.mkdirSync)(backupDir, { recursive: true });
+    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(target, "dist"))) {
+      (0, import_node_fs.cpSync)((0, import_node_path.join)(target, "dist"), (0, import_node_path.join)(backupDir, "dist"), { recursive: true });
+    }
+    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(target, "package.json"))) {
+      (0, import_node_fs.writeFileSync)((0, import_node_path.join)(backupDir, "package.json.bak"), (0, import_node_fs.readFileSync)((0, import_node_path.join)(target, "package.json")));
+    }
+    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(srcDir, "dist"))) {
+      (0, import_node_fs.rmSync)((0, import_node_path.join)(target, "dist"), { recursive: true, force: true });
+      (0, import_node_fs.cpSync)((0, import_node_path.join)(srcDir, "dist"), (0, import_node_path.join)(target, "dist"), { recursive: true });
+    }
+    for (const f of ["package.json", "cordis.patch.yml", "README.md"]) {
+      const src = (0, import_node_path.join)(srcDir, f);
+      const dst = (0, import_node_path.join)(target, f);
+      if ((0, import_node_fs.existsSync)(src)) {
+        let content = (0, import_node_fs.readFileSync)(src, "utf8");
+        if (content.charCodeAt(0) === 65279) content = content.slice(1);
+        (0, import_node_fs.writeFileSync)(dst, content);
+      }
+    }
+    return {
+      ok: true,
+      from: cur,
+      to: check.latest,
+      backupDir,
+      needsRestart: true
+    };
+  } catch (err) {
+    return { ok: false, from: cur, to: check.latest, error: err.message, needsRestart: false };
+  } finally {
+    try {
+      (0, import_node_fs.rmSync)(workDir, { recursive: true, force: true });
+    } catch {
+    }
+  }
+}
+
 // src/plugin.ts
 var LOOPBACK = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(:\d+)?$/i;
 var PLUGIN_NAME = "coopanion-connector-dsh";
@@ -4058,7 +4187,7 @@ function proveLoad() {
     `${process.env.USERPROFILE ?? ""}\\.dsh\\logs\\coopanion-bridge.jsonl`
   ]) {
     try {
-      (0, import_node_fs.appendFileSync)(file, line);
+      (0, import_node_fs2.appendFileSync)(file, line);
     } catch {
     }
   }
@@ -4149,7 +4278,38 @@ var plugin_default = {
         handler: (_req, res) => {
           const facts = agents.facts();
           res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          res.end(JSON.stringify({ ok: true, v: PROTOCOL_VERSION, pet: pet.connected, session: facts?.session ?? null }));
+          res.end(JSON.stringify({
+            ok: true,
+            v: PROTOCOL_VERSION,
+            pluginVersion: currentVersion(),
+            pet: pet.connected,
+            session: facts?.session ?? null
+          }));
+        }
+      });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/check-update",
+        handler: async (_req, res) => {
+          const result = await checkUpdate();
+          res.writeHead(result.ok ? 200 : 502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          res.end(JSON.stringify(result));
+        }
+      });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/update",
+        handler: async (req, res) => {
+          if (req.method !== "POST") {
+            res.writeHead(405, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "method not allowed; use POST" }));
+            return;
+          }
+          const result = await performUpdate();
+          res.writeHead(result.ok ? 200 : 500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          res.end(JSON.stringify(result));
+          if (result.ok) log("info", `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
+          else log("warn", `self-update failed: ${result.error}`);
         }
       });
       log("info", `bridge listening on ${PET_PATH}`);

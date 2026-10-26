@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
  */
 const manifestPath = fileURLToPath(new URL('../package.json', import.meta.url));
 const manifestBytes = readFileSync(manifestPath);
+const manifest = JSON.parse(manifestBytes.toString('utf8'));
 if (manifestBytes[0] === 0xef && manifestBytes[1] === 0xbb && manifestBytes[2] === 0xbf) {
   throw new Error(
     `${manifestPath} starts with a UTF-8 byte-order mark, which JSON.parse rejects; ` +
@@ -56,4 +57,7 @@ await build({
   external: [...builtins],
   sourcemap: false,
   logLevel: 'info',
+  define: {
+    __PKG_VERSION__: JSON.stringify(manifest.version ?? '0.0.0-unknown'),
+  },
 });

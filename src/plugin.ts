@@ -16,6 +16,7 @@ import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
 import { AgentRegistry, noticeOf, type SessionEventLike } from './session-watch.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, reasonText, type HostFrame } from './protocol.ts';
+import { checkUpdate, currentVersion, performUpdate } from './update.ts';
 
 /** Kept for the Host's own checks; a person's message may quote the pet's name in either language. */
 const LOOPBACK = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(:\d+)?$/i;
@@ -209,7 +210,41 @@ export default {
         handler: (_req, res) => {
           const facts = agents.facts();
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(JSON.stringify({ ok: true, v: PROTOCOL_VERSION, pet: pet.connected, session: facts?.session ?? null }));
+          res.end(JSON.stringify({
+            ok: true,
+            v: PROTOCOL_VERSION,
+            pluginVersion: currentVersion(),
+            pet: pet.connected,
+            session: facts?.session ?? null,
+          }));
+        },
+      });
+      // Check if a newer release is available on GitHub.
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/check-update',
+        handler: async (_req, res) => {
+          const result = await checkUpdate();
+          res.writeHead(result.ok ? 200 : 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(result));
+        },
+      });
+      // Trigger self-update: download latest tarball, overwrite local files.
+      // Requires the Host process to have write access to its own node_modules.
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/update',
+        handler: async (req, res) => {
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'method not allowed; use POST' }));
+            return;
+          }
+          const result = await performUpdate();
+          res.writeHead(result.ok ? 200 : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(result));
+          if (result.ok) log('info', `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
+          else log('warn', `self-update failed: ${result.error}`);
         },
       });
       log('info', `bridge listening on ${PET_PATH}`);
