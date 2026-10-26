@@ -149,7 +149,10 @@ export class PetHub {
         case 'ping':
           return;
         case 'pick': {
-          const reason = this.opts.pick?.(frame.session) ?? 'this Host does not support session switching';
+          // `pick` resolves `null` on acceptance, so absence must be tested explicitly: `??`
+          // would turn an accepted pick into the "unsupported" refusal.
+          const pick = this.opts.pick;
+          const reason = pick === undefined ? 'this Host does not support session switching' : pick(frame.session);
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reason === null ? { t: 'picked', session: frame.session } : { t: 'refused', reason }));
           }

@@ -186,3 +186,31 @@ describe('notices to the pet', () => {
     expect(hub.send({ t: 'turn-start', turn: 3 })).toBe(false);
   });
 });
+
+describe('a pet that switches conversation', () => {
+  it('is told when the Host accepted the switch', async () => {
+    const pick = vi.fn(() => null);           // null = 接受
+    const { url } = await listening({ pick });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'pick', session: 'session-2' }));
+    expect(await frame).toEqual({ t: 'picked', session: 'session-2' });
+    expect(pick).toHaveBeenCalledWith('session-2');
+  });
+
+  it('is told why the Host refused', async () => {
+    const { url } = await listening({ pick: () => 'no such open conversation' });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'pick', session: 'gone' }));
+    expect(await frame).toEqual({ t: 'refused', reason: 'no such open conversation' });
+  });
+
+  it('is refused when this Host cannot switch at all', async () => {
+    const { url } = await listening();        // 不传 pick
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'pick', session: 'session-2' }));
+    expect(await frame).toEqual({ t: 'refused', reason: 'this Host does not support session switching' });
+  });
+});
