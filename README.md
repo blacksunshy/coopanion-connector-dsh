@@ -48,13 +48,14 @@ https://github.com/blacksunshy/coopanion-connector-dsh
 
 ### Web（`dsh web`）
 
-三种来源任选一种，**别混用**：同一包名先后从两种来源装会并存冲突，换来源前先 `remove`。
+两种来源任选一种，**别混用**：同一包名先后从两种来源装会并存冲突，换来源前先 `remove`。
 
 | 来源 | 命令 |
 |---|---|
-| npm（推荐） | `dsh plugin --profile web add coopanion-connector-dsh` |
-| GitHub（装的是 main 当前状态，不跟随已发布版本） | `dsh plugin --profile web add github:blacksunshy/coopanion-connector-dsh` |
+| GitHub（推荐，装的是 main 当前状态） | `dsh plugin --profile web add github:blacksunshy/coopanion-connector-dsh` |
 | 本地目录（开发用） | `dsh plugin --profile web add link:<克隆目录的绝对路径>` |
+
+**本包只在 GitHub 分发，没有发布到 npm**：registry 里查不到 `coopanion-connector-dsh`，别用 npm 包名安装。
 
 装完重启 `dsh web`，再按 `Ctrl+F5` 刷新浏览器。
 
@@ -74,6 +75,16 @@ pnpm run build          # 产出 dist/index.cjs
 - `GET http://127.0.0.1:<DSH 端口>/coopanion/status` → `{"ok":true,"v":1,"pet":…,"session":…}`
 - `%APPDATA%\@deepseek-ai\dsh-desktop\logs\coopanion-bridge.jsonl` 多写一行，写明加载它的进程——这一行是"插件被加载"的证据；没有它说明没加载上，与"加载了但桌宠没连上"是两回事
 - **Coopanion 侧还要装 [`cortico-world-fatfish`](https://github.com/blacksunshy/coopanion-fatfish)**，否则桥建起来但没有桌宠来连
+
+### 与桌宠侧的版本配对
+
+| 功能 | 本插件 | 桌宠侧 `cortico-world-fatfish` |
+|---|---|---|
+| 桥接 / 转交 / 语音触发 | ≥ 0.2.0 | ≥ 0.4.0 |
+| 固定会话（桌宠侧「固定到当前会话」、`dsh_pick_session`） | **≥ 0.2.4** | **≥ 0.6.5** |
+| 在线自更新（`/coopanion/check-update`、`/coopanion/update`） | ≥ 0.2.4 | 不涉及 |
+
+桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
 ### 发布到 npm 的要点
 
