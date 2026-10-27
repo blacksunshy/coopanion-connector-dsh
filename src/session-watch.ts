@@ -1,10 +1,16 @@
 /**
  * Which agent the pet's words belong to, and what the pet hears about it.
  *
- * The pet is a second mouth for one conversation, so the bridge keeps exactly one owning agent:
- * the most recently created live agent that is not a subagent. A subagent that answered a bubble
- * would be a speaker the person never opened, and an older session would take words the person
- * meant for the one on their screen.
+ * The pet is a second mouth for one conversation, so the bridge keeps exactly one owning agent.
+ * Three ways the owner can change:
+ *   1. A brand-new non-subagent session is created (agent/created) — the default follows newest.
+ *   2. A session that already existed fires an active event (user message, reply, tool call, …) —
+ *      the auto-follow snaps the owner to it, so a person switching tabs on an old conversation
+ *      will see the pet pick up after they speak.
+ *   3. The pet explicitly `pick`s a session — pins it; auto-follow and new-session creation stop
+ *      stealing the owner away until that pinned session is disposed or unpinned.
+ *
+ * A subagent (header.parentSession present or origin === 'subagent') is never an owner.
  *
  * Everything this module reads from DSH arrives through `session/event`, whose envelopes are
  * `{ type, data }`. The plugin never writes an event of its own type: a reader that meets an
@@ -36,28 +42,39 @@ export interface LiveAgent {
   createUserMessage?: (options: { content: string; source: unknown }) => unknown;
 }
 
-/** The newest agent wins; a subagent never wins. */
+/** The newest non-subagent wins, but a pinned session keeps the owner. */
 export class AgentRegistry {
   private readonly live = new Map<string, LiveAgent>();
   /** model 按 session 缓存，因为模型是请求级属性而非 agent 常驻属性。 */
   private readonly modelCache = new Map<string, string>();
   private ownerId: string | null = null;
+  /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
+  private pinned: boolean = false;
 
-  /** Keyed by session id, which is what `agent/created` and `session/disposed` agree on. */
+  /** True while the pet has explicitly pinned one session. */
+  get isPinned(): boolean {
+    return this.pinned;
+  }
+
+  /**
+   * A new agent appeared. Subagents join the live map but do not steal the owner from an
+   * unpinned non-subagent. An unpinned registry still points at the newest non-subagent; a
+   * pinned one stays put.
+   */
   add(id: string, agent: LiveAgent): void {
-    // 子代理不应成为 owner；但先加入 live Map（万一主会话晚到了，之后还能被正确移除）
-    if (!this.isSubagent(agent)) {
-      this.live.set(id, agent);
-      this.ownerId = id;
-    } else {
-      this.live.set(id, agent);
-    }
+    this.live.set(id, agent);
+    if (this.isSubagent(agent)) return;
+    if (!this.pinned) this.ownerId = id;
   }
 
   remove(id: string): void {
     this.live.delete(id);
     this.modelCache.delete(id);
-    if (this.ownerId === id) this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    // The pinned session is gone — nothing left to pin. Let natural follow resume.
+    if (this.pinned && this.ownerId === id) this.pinned = false;
+    if (this.ownerId === id) {
+      this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    }
     // owner 若变成子代理，跳过去找下一个非子代理
     while (this.ownerId !== null) {
       const owner = this.live.get(this.ownerId);
@@ -76,17 +93,45 @@ export class AgentRegistry {
     return this.ownerId;
   }
 
+  /** The agent currently tracked by id, or undefined when never seen or already disposed. */
+  liveGet(id: string): LiveAgent | undefined {
+    return this.live.get(id);
+  }
+
   /**
    * Lets the pet point its words at a specific live session, instead of always following the
-   * newest one. Returns false when the session is not live (already disposed, never created, or a
-   * subagent), so the caller can refuse the switch.
+   * newest one. Also pins the registry so auto-follow and new-session creation stop stealing the
+   * owner away. Returns false when the session is not live (already disposed, never created, or
+   * a subagent), so the caller can refuse the switch.
    */
   setOwner(id: string): boolean {
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
     this.ownerId = id;
+    this.pinned = true;
     return true;
+  }
+
+  /**
+   * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
+   * or the model replied there. Silent navigation (no events from the target session) does not
+   * trigger a move — this only reacts to real activity. Returns true when moved, false when the
+   * registry is pinned, the session is not live, or it is a subagent.
+   */
+  forceOwner(id: string): boolean {
+    if (this.pinned) return false;
+    if (id === this.ownerId) return false;
+    const agent = this.live.get(id);
+    if (!agent) return false;
+    if (this.isSubagent(agent)) return false;
+    this.ownerId = id;
+    return true;
+  }
+
+  /** Unconditionally clears the pin; used when the pet manually unpins (future). */
+  clearPin(): void {
+    this.pinned = false;
   }
 
   /** 记录某会话最近一次 request/header 里看到的模型名。 */
@@ -107,16 +152,17 @@ export class AgentRegistry {
     };
   }
 
-  private modelOf(sessionId: string): string {
-    return this.modelCache.get(sessionId) ?? '';
-  }
-
-  private isSubagent(agent: LiveAgent): boolean {
+  /** Is this agent a subagent, so it should never be the owner? */
+  isSubagent(agent: LiveAgent): boolean {
     const header = agent.session.header;
     if (!header) return false;
     if (typeof header.parentSession === 'string' && header.parentSession.length > 0) return true;
     if (header.origin === 'subagent') return true;
     return false;
+  }
+
+  private modelOf(sessionId: string): string {
+    return this.modelCache.get(sessionId) ?? '';
   }
 }
 
@@ -124,6 +170,23 @@ export class AgentRegistry {
 export interface SessionEventLike {
   type?: unknown;
   data?: unknown;
+}
+
+/** Active session events that indicate the person or the model is talking on this session —
+ *  trigger auto-follow when they come from a non-owner, non-pinned registry. */
+const ACTIVE_EVENT_TYPES = new Set<string>([
+  'user/message',
+  'assistant/message',
+  'turn/start',
+  'turn/end',
+  'tool/call',
+  'approval/asked',
+]);
+
+/** Whether `event` is one of the active-event types that moves the auto-follow owner. */
+export function isActiveSessionEvent(event: SessionEventLike): boolean {
+  const t = event?.type;
+  return typeof t === 'string' && ACTIVE_EVENT_TYPES.has(t);
 }
 
 /** A notice for the pet derived from one session event, or null when the event is not the pet's business. */

@@ -14,7 +14,7 @@ import type { Duplex } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
-import { AgentRegistry, noticeOf, type SessionEventLike } from './session-watch.ts';
+import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, reasonText, type HostFrame } from './protocol.ts';
 import { checkUpdate, currentVersion, performUpdate } from './update.ts';
 
@@ -287,6 +287,18 @@ export default {
         if (typeof model === 'string' && model) agents.rememberModel(id, model);
         // 即便这个 session 不是 owner，也缓存一下，切过来时能直接读到
         return;
+      }
+      // Auto-follow：当一个已经存在的会话开始活跃（用户说话 / 模型回复 / 工具调用 / 审批），
+      // 而桌宠还在跟着另一个会话时，把 owner 切过来，让桌宠的 status 和转发目标都对齐到
+      // 用户当前在 DSH 里真正操作的那个会话。已 pinned（桌宠显式 pick 过）则不动。
+      if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
+        const agent = agents.liveGet(id);
+        if (agent && !agents.isSubagent(agent) && !agents.isPinned) {
+          if (agents.forceOwner(id)) {
+            const facts = agents.facts();
+            if (facts && hub?.connected) hub.notifyBound(facts);
+          }
+        }
       }
       if (agents.ownerSession !== id) return;
       if (event?.type === 'user/message') {

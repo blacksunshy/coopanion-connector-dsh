@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '../src/pet-hub.ts';
 import { SAY_MAX, argumentNames, assistantText, carriesBridgePrefix, parsePetFrame, reasonText } from '../src/protocol.ts';
-import { AgentRegistry, noticeOf, type LiveAgent } from '../src/session-watch.ts';
+import { AgentRegistry, isActiveSessionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
 
 describe('a frame from the pet', () => {
   it('is read when it is one this Host knows', () => {
@@ -130,6 +130,83 @@ describe('which conversation the pet speaks into', () => {
     // a disposed / unknown session is refused, owner unchanged
     expect(agents.setOwner('gone')).toBe(false);
     expect(agents.ownerSession).toBe('a');
+  });
+
+  describe('auto-follow from an already-live session', () => {
+    it('snaps the owner when an older live session fires an active event', () => {
+      const agents = new AgentRegistry();
+      agents.add('a', agentOf('a'));
+      agents.add('b', agentOf('b'));
+      // newest wins by default
+      expect(agents.ownerSession).toBe('b');
+      // the older session becomes active (person switched tabs and spoke)
+      expect(agents.forceOwner('a')).toBe(true);
+      expect(agents.ownerSession).toBe('a');
+    });
+
+    it('does not snap when the registry is pinned by an explicit pick', () => {
+      const agents = new AgentRegistry();
+      agents.add('a', agentOf('a'));
+      agents.add('b', agentOf('b'));
+      // pet pinned 'a' explicitly
+      agents.setOwner('a');
+      expect(agents.isPinned).toBe(true);
+      // newer 'b' fires activity — auto-follow must not steal
+      expect(agents.forceOwner('b')).toBe(false);
+      expect(agents.ownerSession).toBe('a');
+    });
+
+    it('does not steal from a pinned session when a brand-new session appears', () => {
+      const agents = new AgentRegistry();
+      agents.add('a', agentOf('a'));
+      agents.setOwner('a');
+      // 'b' is created after the pin — add() must not overwrite
+      agents.add('b', agentOf('b'));
+      expect(agents.ownerSession).toBe('a');
+    });
+
+    it('clears the pin when the pinned session is disposed, so natural follow can resume', () => {
+      const agents = new AgentRegistry();
+      agents.add('a', agentOf('a'));
+      agents.add('b', agentOf('b'));
+      agents.setOwner('a');           // pin to 'a'
+      expect(agents.isPinned).toBe(true);
+      agents.remove('a');             // pinned session goes away
+      expect(agents.isPinned).toBe(false);
+      expect(agents.ownerSession).toBe('b');   // newest of the remaining
+      // forceOwner on a non-owner now moves it (but here owner IS 'b' so no-op → false)
+      expect(agents.forceOwner('b')).toBe(false);
+      // the real proof: a NEW live session can steal, which was blocked while pinned
+      agents.add('c', agentOf('c'));
+      expect(agents.ownerSession).toBe('c');   // natural newest-follow works again
+    });
+
+    it('refuses a subagent, an unknown session, and an already-owner session', () => {
+      const agents = new AgentRegistry();
+      agents.add('a', agentOf('a'));
+      agents.add('sub', agentOf('sub', { parentSession: 'a' }));
+      expect(agents.forceOwner('sub')).toBe(false);    // subagent
+      expect(agents.forceOwner('gone')).toBe(false);   // never seen
+      expect(agents.forceOwner('a')).toBe(false);      // already the owner (no-op, no "moved")
+    });
+  });
+
+  describe('active-event detection', () => {
+    it('picks the six event types that mean real work happened on this session', () => {
+      expect(isActiveSessionEvent({ type: 'user/message' })).toBe(true);
+      expect(isActiveSessionEvent({ type: 'assistant/message' })).toBe(true);
+      expect(isActiveSessionEvent({ type: 'turn/start' })).toBe(true);
+      expect(isActiveSessionEvent({ type: 'turn/end' })).toBe(true);
+      expect(isActiveSessionEvent({ type: 'tool/call' })).toBe(true);
+      expect(isActiveSessionEvent({ type: 'approval/asked' })).toBe(true);
+    });
+
+    it('ignores request/header, unknown types, and missing type', () => {
+      expect(isActiveSessionEvent({ type: 'request/header', data: { header: { config: { model: 'x' } } } })).toBe(false);
+      expect(isActiveSessionEvent({ type: 'step/start' })).toBe(false);
+      expect(isActiveSessionEvent({ type: 'banana' })).toBe(false);
+      expect(isActiveSessionEvent({})).toBe(false);
+    });
   });
 });
 

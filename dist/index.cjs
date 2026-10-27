@@ -3954,19 +3954,29 @@ var AgentRegistry = class {
   /** model 按 session 缓存，因为模型是请求级属性而非 agent 常驻属性。 */
   modelCache = /* @__PURE__ */ new Map();
   ownerId = null;
-  /** Keyed by session id, which is what `agent/created` and `session/disposed` agree on. */
+  /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
+  pinned = false;
+  /** True while the pet has explicitly pinned one session. */
+  get isPinned() {
+    return this.pinned;
+  }
+  /**
+   * A new agent appeared. Subagents join the live map but do not steal the owner from an
+   * unpinned non-subagent. An unpinned registry still points at the newest non-subagent; a
+   * pinned one stays put.
+   */
   add(id, agent) {
-    if (!this.isSubagent(agent)) {
-      this.live.set(id, agent);
-      this.ownerId = id;
-    } else {
-      this.live.set(id, agent);
-    }
+    this.live.set(id, agent);
+    if (this.isSubagent(agent)) return;
+    if (!this.pinned) this.ownerId = id;
   }
   remove(id) {
     this.live.delete(id);
     this.modelCache.delete(id);
-    if (this.ownerId === id) this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    if (this.pinned && this.ownerId === id) this.pinned = false;
+    if (this.ownerId === id) {
+      this.ownerId = [...this.live.keys()].at(-1) ?? null;
+    }
     while (this.ownerId !== null) {
       const owner = this.live.get(this.ownerId);
       if (owner && !this.isSubagent(owner)) break;
@@ -3981,17 +3991,42 @@ var AgentRegistry = class {
   get ownerSession() {
     return this.ownerId;
   }
+  /** The agent currently tracked by id, or undefined when never seen or already disposed. */
+  liveGet(id) {
+    return this.live.get(id);
+  }
   /**
    * Lets the pet point its words at a specific live session, instead of always following the
-   * newest one. Returns false when the session is not live (already disposed, never created, or a
-   * subagent), so the caller can refuse the switch.
+   * newest one. Also pins the registry so auto-follow and new-session creation stop stealing the
+   * owner away. Returns false when the session is not live (already disposed, never created, or
+   * a subagent), so the caller can refuse the switch.
    */
   setOwner(id) {
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
     this.ownerId = id;
+    this.pinned = true;
     return true;
+  }
+  /**
+   * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
+   * or the model replied there. Silent navigation (no events from the target session) does not
+   * trigger a move — this only reacts to real activity. Returns true when moved, false when the
+   * registry is pinned, the session is not live, or it is a subagent.
+   */
+  forceOwner(id) {
+    if (this.pinned) return false;
+    if (id === this.ownerId) return false;
+    const agent = this.live.get(id);
+    if (!agent) return false;
+    if (this.isSubagent(agent)) return false;
+    this.ownerId = id;
+    return true;
+  }
+  /** Unconditionally clears the pin; used when the pet manually unpins (future). */
+  clearPin() {
+    this.pinned = false;
   }
   /** 记录某会话最近一次 request/header 里看到的模型名。 */
   rememberModel(id, model) {
@@ -4009,9 +4044,7 @@ var AgentRegistry = class {
       model: this.modelOf(String(session.id ?? ""))
     };
   }
-  modelOf(sessionId) {
-    return this.modelCache.get(sessionId) ?? "";
-  }
+  /** Is this agent a subagent, so it should never be the owner? */
   isSubagent(agent) {
     const header = agent.session.header;
     if (!header) return false;
@@ -4019,7 +4052,22 @@ var AgentRegistry = class {
     if (header.origin === "subagent") return true;
     return false;
   }
+  modelOf(sessionId) {
+    return this.modelCache.get(sessionId) ?? "";
+  }
 };
+var ACTIVE_EVENT_TYPES = /* @__PURE__ */ new Set([
+  "user/message",
+  "assistant/message",
+  "turn/start",
+  "turn/end",
+  "tool/call",
+  "approval/asked"
+]);
+function isActiveSessionEvent(event) {
+  const t = event?.type;
+  return typeof t === "string" && ACTIVE_EVENT_TYPES.has(t);
+}
 function noticeOf(sessionId, event) {
   const data = event.data ?? {};
   switch (event.type) {
@@ -4067,7 +4115,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.4") return "0.2.4";
+  if ("0.2.5") return "0.2.5";
   try {
     const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4343,6 +4391,15 @@ var plugin_default = {
         const model = data.header?.config?.model;
         if (typeof model === "string" && model) agents.rememberModel(id, model);
         return;
+      }
+      if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
+        const agent = agents.liveGet(id);
+        if (agent && !agents.isSubagent(agent) && !agents.isPinned) {
+          if (agents.forceOwner(id)) {
+            const facts = agents.facts();
+            if (facts && hub?.connected) hub.notifyBound(facts);
+          }
+        }
       }
       if (agents.ownerSession !== id) return;
       if (event?.type === "user/message") {
