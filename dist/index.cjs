@@ -4115,7 +4115,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.5") return "0.2.5";
+  if ("0.2.6") return "0.2.6";
   try {
     const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4148,7 +4148,10 @@ async function checkUpdate() {
       current: cur,
       latest,
       hasUpdate: isNewer(latest, cur),
-      releaseUrl: data.html_url
+      releaseUrl: data.html_url,
+      releaseName: data.name ?? void 0,
+      releaseNotes: data.body ?? void 0,
+      publishedAt: data.published_at ?? void 0
     };
   } catch (err) {
     return { ok: false, current: cur, latest: "", hasUpdate: false, releaseUrl: "", error: err.message };
@@ -4221,6 +4224,8 @@ async function performUpdate() {
 // src/plugin.ts
 var LOOPBACK = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(:\d+)?$/i;
 var PLUGIN_NAME = "coopanion-connector-dsh";
+var AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1e3;
+var AUTO_CHECK_INITIAL_DELAY_MS = 30 * 1e3;
 function proveLoad() {
   const line = `${JSON.stringify({
     at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -4314,12 +4319,45 @@ var plugin_default = {
         log
       });
       hub = pet;
-      const dispose = scoped.webServer.registerUpgrade({ path: PET_PATH, handler: allowed(pet.upgrade) });
-      scoped.effect(() => () => {
-        dispose();
-        pet.close();
-        hub = null;
+      let lastCheck = null;
+      let lastNotifiedVersion = null;
+      const disposeUpgrade = scoped.webServer.registerUpgrade({ path: PET_PATH, handler: allowed(pet.upgrade) });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/update",
+        handler: async (req, res) => {
+          if (req.method === "GET") {
+            const cur = currentVersion();
+            res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+            res.end(buildUpdatePage(cur));
+            return;
+          }
+          if (req.method === "POST") {
+            await handleDoUpdate(res);
+            return;
+          }
+          res.writeHead(405, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "use GET for the UI or POST for the update" }));
+        }
       });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/do-update",
+        handler: async (_req, res) => {
+          await handleDoUpdate(res);
+        }
+      });
+      async function handleDoUpdate(res) {
+        const result = await performUpdate();
+        res.writeHead(result.ok ? 200 : 500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        res.end(JSON.stringify(result));
+        if (result.ok) {
+          log("info", `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
+          lastNotifiedVersion = result.to ?? null;
+        } else {
+          log("warn", `self-update failed: ${result.error}`);
+        }
+      }
       scoped.webServer.register({
         kind: "exact",
         path: "/coopanion/status",
@@ -4331,7 +4369,16 @@ var plugin_default = {
             v: PROTOCOL_VERSION,
             pluginVersion: currentVersion(),
             pet: pet.connected,
-            session: facts?.session ?? null
+            session: facts?.session ?? null,
+            updateInfo: lastCheck ? {
+              hasUpdate: lastCheck.hasUpdate,
+              current: lastCheck.current,
+              latest: lastCheck.latest,
+              releaseUrl: lastCheck.releaseUrl,
+              releaseName: lastCheck.releaseName,
+              checkedAt: (/* @__PURE__ */ new Date()).toISOString()
+            } : null,
+            updateUrl: "/coopanion/update"
           }));
         }
       });
@@ -4340,24 +4387,54 @@ var plugin_default = {
         path: "/coopanion/check-update",
         handler: async (_req, res) => {
           const result = await checkUpdate();
+          lastCheck = result;
+          if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
+            if (hub?.connected) {
+              hub.send({
+                t: "notice",
+                kind: "update-available",
+                text: `Coopanion Connector \u6709\u65B0\u7248\u672C v${result.latest}\uFF0C\u5F53\u524D v${result.current}\u3002\u8BBF\u95EE /coopanion/update \u67E5\u770B\u3002`
+              });
+            }
+            lastNotifiedVersion = result.latest;
+          }
           res.writeHead(result.ok ? 200 : 502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
           res.end(JSON.stringify(result));
         }
       });
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/update",
-        handler: async (req, res) => {
-          if (req.method !== "POST") {
-            res.writeHead(405, { "content-type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: "method not allowed; use POST" }));
-            return;
+      let autoTimer = null;
+      const schedule = () => {
+        autoTimer = setTimeout(async () => {
+          try {
+            const result = await checkUpdate();
+            lastCheck = result;
+            if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
+              if (hub?.connected) {
+                hub.send({
+                  t: "notice",
+                  kind: "update-available",
+                  text: `Coopanion Connector \u6709\u65B0\u7248\u672C v${result.latest}\uFF0C\u5F53\u524D v${result.current}\u3002\u8BBF\u95EE /coopanion/update \u67E5\u770B\u66F4\u65B0\u4ECB\u7ECD\u5E76\u66F4\u65B0\u3002`
+                });
+              }
+              lastNotifiedVersion = result.latest;
+            }
+          } catch (err) {
+            log("warn", `background update check failed: ${err.message}`);
+          } finally {
+            autoTimer = setTimeout(schedule, AUTO_CHECK_INTERVAL_MS);
+            autoTimer.unref?.();
           }
-          const result = await performUpdate();
-          res.writeHead(result.ok ? 200 : 500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          res.end(JSON.stringify(result));
-          if (result.ok) log("info", `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
-          else log("warn", `self-update failed: ${result.error}`);
+        }, AUTO_CHECK_INITIAL_DELAY_MS);
+        autoTimer.unref?.();
+      };
+      schedule();
+      scoped.effect(() => () => {
+        disposeUpgrade();
+        pet.close();
+        hub = null;
+        if (autoTimer) {
+          clearTimeout(autoTimer);
+          autoTimer = null;
         }
       });
       log("info", `bridge listening on ${PET_PATH}`);
@@ -4440,6 +4517,152 @@ function allowed(next) {
     }
     next(req, socket, head);
   };
+}
+function buildUpdatePage(current) {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coopanion Connector \xB7 \u81EA\u66F4\u65B0</title>
+<style>
+  :root { --bg:#0f172a; --panel:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --accent:#0ea5e9; --accent-dim:#0284c7; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --border:#334155; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; flex-direction:column; }
+  header { padding: 28px 24px 16px; border-bottom: 1px solid var(--border); }
+  header h1 { margin:0 0 4px; font-size:20px; font-weight:600; }
+  header .sub { color:var(--muted); font-size:13px; }
+  main { flex:1; max-width:720px; margin:24px auto; padding: 0 24px; width:100%; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:16px; }
+  .hidden { display:none; }
+  h2 { margin:0 0 8px; font-size:16px; font-weight:600; }
+  .version-line { font-size:14px; color:var(--muted); margin-bottom:4px; }
+  .version-line strong { color:var(--text); }
+  .releasename { font-size:13px; color:var(--muted); margin:2px 0 12px; }
+  .notes-box { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; margin-top:8px; }
+  .notes-box pre { margin:0; white-space:pre-wrap; font-family: ui-monospace,Menlo,monospace; font-size:13px; line-height:1.5; color:#cbd5e1; max-height:360px; overflow:auto; }
+  .notes-box summary { cursor:pointer; color:var(--accent); font-size:13px; user-select:none; }
+  .notes-box summary:hover { text-decoration:underline; }
+  button { cursor:pointer; border:none; border-radius:8px; padding:10px 20px; font-size:14px; font-weight:500; transition: background .15s, transform .05s; }
+  button.primary { background:var(--accent); color:white; }
+  button.primary:hover { background:var(--accent-dim); }
+  button.primary:active { transform: translateY(1px); }
+  button.primary:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
+  button.ghost:hover { background:rgba(255,255,255,.04); }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .hint { color:var(--muted); font-size:12px; margin-top:10px; }
+  .ok { border-color:rgba(34,197,94,.4); }
+  .ok h2 { color:var(--ok); }
+  .err h2 { color:var(--err); }
+  .spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-top:12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .mono { font-family: ui-monospace,Menlo,monospace; }
+  .current-chip { display:inline-block; background:rgba(14,165,233,.15); color:var(--accent); padding:2px 8px; border-radius:6px; font-size:12px; font-weight:500; }
+  footer { text-align:center; padding:16px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>\u{1F504} Coopanion Connector \u81EA\u66F4\u65B0</h1>
+  <p class="sub">\u672C\u5730\u63D2\u4EF6\uFF0C\u81EA\u52A8\u4ECE GitHub Release \u62C9\u53D6\u65B0\u7248\u672C</p>
+</header>
+<main id="app">
+  <section id="checking" class="card">\u6B63\u5728\u68C0\u67E5\u66F4\u65B0\u2026</section>
+  <section id="uptodate" class="card ok hidden">
+    <h2>\u5DF2\u662F\u6700\u65B0\u7248\u672C \u2705</h2>
+    <p class="version-line">\u5F53\u524D <span class="current-chip"></span>\uFF0CGitHub Release \u4E0A\u6682\u65E0\u66F4\u65B0\u3002</p>
+    <p><a href="https://github.com/blacksunshy/coopanion-connector-dsh/releases" target="_blank" rel="noreferrer">\u67E5\u770B\u6240\u6709 Release \u2192</a></p>
+  </section>
+  <section id="available" class="card hidden">
+    <h2>\u53D1\u73B0\u65B0\u7248\u672C \u{1F389}</h2>
+    <p class="version-line">\u5F53\u524D <strong>v<span id="curV">${current}</span></strong> \u2192 \u6700\u65B0 <strong>v<span id="latV"></span></strong></p>
+    <p class="releasename" id="relName"></p>
+    <div class="notes-box">
+      <details open>
+        <summary>\u{1F4DD} \u66F4\u65B0\u4ECB\u7ECD</summary>
+        <pre id="relNotes">\u52A0\u8F7D\u4E2D\u2026</pre>
+      </details>
+    </div>
+    <p><a id="relUrl" href="#" target="_blank" rel="noreferrer">\u5728 GitHub Release \u9875\u9762\u67E5\u770B \u2192</a></p>
+    <button id="updateBtn" class="primary">\u7ACB\u5373\u66F4\u65B0\uFF08\u4E0B\u8F7D\u5E76\u8986\u76D6\uFF09</button>
+    <p class="hint">\u66F4\u65B0\u5B8C\u6210\u540E\u9700\u8981 <strong>\u91CD\u542F DSH</strong> \u624D\u80FD\u52A0\u8F7D\u65B0\u7248\u672C\u3002</p>
+  </section>
+  <section id="error" class="card err hidden">
+    <h2>\u68C0\u67E5\u5931\u8D25 \u274C</h2>
+    <p id="errMsg" class="mono"></p>
+    <button class="ghost" onclick="check()">\u91CD\u8BD5</button>
+  </section>
+  <section id="updating" class="card hidden">
+    <h2>\u6B63\u5728\u66F4\u65B0\u2026</h2>
+    <p>\u4ECE GitHub Release \u4E0B\u8F7D\u6E90\u7801\u5305\uFF0C\u8986\u76D6\u672C\u5730 dist/ \u548C package.json\u2026</p>
+    <div class="spinner"></div>
+  </section>
+  <section id="done" class="card ok hidden">
+    <h2>\u66F4\u65B0\u5B8C\u6210 \u2705</h2>
+    <p><strong>v<span id="fromV"></span></strong> \u2192 <strong>v<span id="toV"></span></strong></p>
+    <p><strong>\u8BF7\u91CD\u542F DSH</strong> \u8BA9\u65B0\u7248\u672C\u751F\u6548\u3002</p>
+  </section>
+</main>
+<footer>Coopanion Connector \u81EA\u66F4\u65B0 \xB7 Host \u6CE8\u5165 v${current}</footer>
+<script>
+const $ = (id) => document.getElementById(id);
+async function check() {
+  show('checking');
+  try {
+    const r = await fetch('/coopanion/check-update', { cache: 'no-store' });
+    const d = await r.json();
+    if (!d.ok) {
+      $('errMsg').textContent = d.error || '\u672A\u77E5\u9519\u8BEF';
+      show('error');
+      return;
+    }
+    if (!d.hasUpdate) {
+      $('uptodate').querySelector('.current-chip').textContent = 'v' + d.current;
+      show('uptodate');
+      return;
+    }
+    $('curV').textContent = d.current;
+    $('latV').textContent = d.latest;
+    $('relName').textContent = d.releaseName ? d.releaseName : '';
+    $('relNotes').textContent = d.releaseNotes ? d.releaseNotes.trim() : '\uFF08\u8BE5 Release \u6CA1\u6709\u5199\u66F4\u65B0\u8BF4\u660E\uFF09';
+    $('relUrl').href = d.releaseUrl;
+    show('available');
+  } catch (e) {
+    $('errMsg').textContent = String(e.message || e);
+    show('error');
+  }
+}
+async function doUpdate() {
+  $('updateBtn').disabled = true;
+  show('updating');
+  try {
+    const r = await fetch('/coopanion/do-update', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      $('errMsg').textContent = d.error || '\u66F4\u65B0\u5931\u8D25';
+      show('error');
+      return;
+    }
+    $('fromV').textContent = d.from || '';
+    $('toV').textContent = d.to || '';
+    show('done');
+  } catch (e) {
+    $('errMsg').textContent = String(e.message || e);
+    show('error');
+  }
+}
+function show(id) {
+  ['checking','uptodate','available','error','updating','done'].forEach(s => $(s).classList.toggle('hidden', s !== id));
+}
+window.addEventListener('DOMContentLoaded', () => {
+  $('updateBtn').addEventListener('click', doUpdate);
+  check();
+});
+</script>
+</body>
+</html>`;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

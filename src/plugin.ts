@@ -16,7 +16,7 @@ import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
 import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, reasonText, type HostFrame } from './protocol.ts';
-import { checkUpdate, currentVersion, performUpdate } from './update.ts';
+import { checkUpdate, currentVersion, performUpdate, type CheckUpdateResult } from './update.ts';
 
 /** Kept for the Host's own checks; a person's message may quote the pet's name in either language. */
 const LOOPBACK = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(:\d+)?$/i;
@@ -53,6 +53,11 @@ interface SessionEventPayload {
 }
 
 const PLUGIN_NAME = 'coopanion-connector-dsh';
+
+/** 后台自动检查更新的间隔。GitHub API 对匿名客户端有 60 req/min 限制，30 min 足够。 */
+const AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+/** Host 启动后先等这么久再跑第一次检查，别跟 DSH 自己的启动抢网络。 */
+const AUTO_CHECK_INITIAL_DELAY_MS = 30 * 1000;
 
 /**
  * Proof of load, appended once per activation.
@@ -197,12 +202,54 @@ export default {
         log,
       });
       hub = pet;
-      const dispose = scoped.webServer!.registerUpgrade({ path: PET_PATH, handler: allowed(pet.upgrade) });
-      scoped.effect(() => () => {
-        dispose();
-        pet.close();
-        hub = null;
+
+      /** 最近一次后台检查更新的结果；用于 /coopanion/status 和 WebSocket 通知。 */
+      let lastCheck: CheckUpdateResult | null = null;
+      /** 上一次已经通知过 pet 的版本号，避免同一个新版本反复通知。 */
+      let lastNotifiedVersion: string | null = null;
+
+      const disposeUpgrade = scoped.webServer!.registerUpgrade({ path: PET_PATH, handler: allowed(pet.upgrade) });
+
+      /** GET — 自更新页面 HTML 界面；POST — 兼容路由，走 performUpdate。 */
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/update',
+        handler: async (req, res) => {
+          if (req.method === 'GET') {
+            const cur = currentVersion();
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(buildUpdatePage(cur));
+            return;
+          }
+          if (req.method === 'POST') {
+            await handleDoUpdate(res);
+            return;
+          }
+          res.writeHead(405, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'use GET for the UI or POST for the update' }));
+        },
       });
+      /** POST — 实际执行自更新；UI 和脚本都调这个。 */
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/do-update',
+        handler: async (_req, res) => { await handleDoUpdate(res); },
+      });
+
+      /** 抽出来避免两条 POST 路由重复同样的写头 + performUpdate。 */
+      async function handleDoUpdate(res: DshResponse): Promise<void> {
+        const result = await performUpdate();
+        res.writeHead(result.ok ? 200 : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(result));
+        if (result.ok) {
+          log('info', `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
+          // 更新完了，版本同步掉
+          lastNotifiedVersion = result.to ?? null;
+        } else {
+          log('warn', `self-update failed: ${result.error}`);
+        }
+      }
+
       // A read-only view for the pet page and for hand-checking the bridge without a socket.
       scoped.webServer!.register({
         kind: 'exact',
@@ -216,36 +263,74 @@ export default {
             pluginVersion: currentVersion(),
             pet: pet.connected,
             session: facts?.session ?? null,
+            updateInfo: lastCheck ? {
+              hasUpdate: lastCheck.hasUpdate,
+              current: lastCheck.current,
+              latest: lastCheck.latest,
+              releaseUrl: lastCheck.releaseUrl,
+              releaseName: lastCheck.releaseName,
+              checkedAt: new Date().toISOString(),
+            } : null,
+            updateUrl: '/coopanion/update',
           }));
         },
       });
-      // Check if a newer release is available on GitHub.
+      // Check if a newer release is available on GitHub. Caches result for status + auto-notice.
       scoped.webServer!.register({
         kind: 'exact',
         path: '/coopanion/check-update',
         handler: async (_req, res) => {
           const result = await checkUpdate();
+          lastCheck = result;
+          // 通知连接着的桌宠：有新版本啦
+          if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
+            if (hub?.connected) {
+              hub.send({
+                t: 'notice',
+                kind: 'update-available',
+                text: `Coopanion Connector 有新版本 v${result.latest}，当前 v${result.current}。访问 /coopanion/update 查看。`,
+              });
+            }
+            lastNotifiedVersion = result.latest;
+          }
           res.writeHead(result.ok ? 200 : 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           res.end(JSON.stringify(result));
         },
       });
-      // Trigger self-update: download latest tarball, overwrite local files.
-      // Requires the Host process to have write access to its own node_modules.
-      scoped.webServer!.register({
-        kind: 'exact',
-        path: '/coopanion/update',
-        handler: async (req, res) => {
-          if (req.method !== 'POST') {
-            res.writeHead(405, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ ok: false, error: 'method not allowed; use POST' }));
-            return;
+
+      // 后台定时检查：Host 起来 30s 后第一次跑，之后每 30 min 一次。
+      let autoTimer: NodeJS.Timeout | null = null;
+      const schedule = (): void => {
+        autoTimer = setTimeout(async () => {
+          try {
+            const result = await checkUpdate();
+            lastCheck = result;
+            if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
+              if (hub?.connected) {
+                hub.send({
+                  t: 'notice',
+                  kind: 'update-available',
+                  text: `Coopanion Connector 有新版本 v${result.latest}，当前 v${result.current}。访问 /coopanion/update 查看更新介绍并更新。`,
+                });
+              }
+              lastNotifiedVersion = result.latest;
+            }
+          } catch (err) {
+            log('warn', `background update check failed: ${(err as Error).message}`);
+          } finally {
+            autoTimer = setTimeout(schedule, AUTO_CHECK_INTERVAL_MS);
+            autoTimer.unref?.();
           }
-          const result = await performUpdate();
-          res.writeHead(result.ok ? 200 : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(JSON.stringify(result));
-          if (result.ok) log('info', `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
-          else log('warn', `self-update failed: ${result.error}`);
-        },
+        }, AUTO_CHECK_INITIAL_DELAY_MS);
+        autoTimer.unref?.();
+      };
+      schedule();
+
+      scoped.effect(() => () => {
+        disposeUpgrade();
+        pet.close();
+        hub = null;
+        if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
       });
       log('info', `bridge listening on ${PET_PATH}`);
     });
@@ -352,5 +437,159 @@ export function messageText(message: unknown): string {
     .map((block) => (typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string' ? (block as { text: string }).text : ''))
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Returns the self-contained HTML page the Host serves at GET /coopanion/update.
+ * Injects the currently running version; all other dynamic state (latest release,
+ * notes, update status) is fetched client-side from the same Host.
+ */
+function buildUpdatePage(current: string): string {
+  // NOTE: backticks below need escaping if any future change adds ${…} inside the JS string;
+  // the two ${current} are intentional — evaluated at render time.
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coopanion Connector · 自更新</title>
+<style>
+  :root { --bg:#0f172a; --panel:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --accent:#0ea5e9; --accent-dim:#0284c7; --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --border:#334155; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; flex-direction:column; }
+  header { padding: 28px 24px 16px; border-bottom: 1px solid var(--border); }
+  header h1 { margin:0 0 4px; font-size:20px; font-weight:600; }
+  header .sub { color:var(--muted); font-size:13px; }
+  main { flex:1; max-width:720px; margin:24px auto; padding: 0 24px; width:100%; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px; margin-bottom:16px; }
+  .hidden { display:none; }
+  h2 { margin:0 0 8px; font-size:16px; font-weight:600; }
+  .version-line { font-size:14px; color:var(--muted); margin-bottom:4px; }
+  .version-line strong { color:var(--text); }
+  .releasename { font-size:13px; color:var(--muted); margin:2px 0 12px; }
+  .notes-box { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; margin-top:8px; }
+  .notes-box pre { margin:0; white-space:pre-wrap; font-family: ui-monospace,Menlo,monospace; font-size:13px; line-height:1.5; color:#cbd5e1; max-height:360px; overflow:auto; }
+  .notes-box summary { cursor:pointer; color:var(--accent); font-size:13px; user-select:none; }
+  .notes-box summary:hover { text-decoration:underline; }
+  button { cursor:pointer; border:none; border-radius:8px; padding:10px 20px; font-size:14px; font-weight:500; transition: background .15s, transform .05s; }
+  button.primary { background:var(--accent); color:white; }
+  button.primary:hover { background:var(--accent-dim); }
+  button.primary:active { transform: translateY(1px); }
+  button.primary:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
+  button.ghost:hover { background:rgba(255,255,255,.04); }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .hint { color:var(--muted); font-size:12px; margin-top:10px; }
+  .ok { border-color:rgba(34,197,94,.4); }
+  .ok h2 { color:var(--ok); }
+  .err h2 { color:var(--err); }
+  .spinner { width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin-top:12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .mono { font-family: ui-monospace,Menlo,monospace; }
+  .current-chip { display:inline-block; background:rgba(14,165,233,.15); color:var(--accent); padding:2px 8px; border-radius:6px; font-size:12px; font-weight:500; }
+  footer { text-align:center; padding:16px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔄 Coopanion Connector 自更新</h1>
+  <p class="sub">本地插件，自动从 GitHub Release 拉取新版本</p>
+</header>
+<main id="app">
+  <section id="checking" class="card">正在检查更新…</section>
+  <section id="uptodate" class="card ok hidden">
+    <h2>已是最新版本 ✅</h2>
+    <p class="version-line">当前 <span class="current-chip"></span>，GitHub Release 上暂无更新。</p>
+    <p><a href="https://github.com/blacksunshy/coopanion-connector-dsh/releases" target="_blank" rel="noreferrer">查看所有 Release →</a></p>
+  </section>
+  <section id="available" class="card hidden">
+    <h2>发现新版本 🎉</h2>
+    <p class="version-line">当前 <strong>v<span id="curV">${current}</span></strong> → 最新 <strong>v<span id="latV"></span></strong></p>
+    <p class="releasename" id="relName"></p>
+    <div class="notes-box">
+      <details open>
+        <summary>📝 更新介绍</summary>
+        <pre id="relNotes">加载中…</pre>
+      </details>
+    </div>
+    <p><a id="relUrl" href="#" target="_blank" rel="noreferrer">在 GitHub Release 页面查看 →</a></p>
+    <button id="updateBtn" class="primary">立即更新（下载并覆盖）</button>
+    <p class="hint">更新完成后需要 <strong>重启 DSH</strong> 才能加载新版本。</p>
+  </section>
+  <section id="error" class="card err hidden">
+    <h2>检查失败 ❌</h2>
+    <p id="errMsg" class="mono"></p>
+    <button class="ghost" onclick="check()">重试</button>
+  </section>
+  <section id="updating" class="card hidden">
+    <h2>正在更新…</h2>
+    <p>从 GitHub Release 下载源码包，覆盖本地 dist/ 和 package.json…</p>
+    <div class="spinner"></div>
+  </section>
+  <section id="done" class="card ok hidden">
+    <h2>更新完成 ✅</h2>
+    <p><strong>v<span id="fromV"></span></strong> → <strong>v<span id="toV"></span></strong></p>
+    <p><strong>请重启 DSH</strong> 让新版本生效。</p>
+  </section>
+</main>
+<footer>Coopanion Connector 自更新 · Host 注入 v${current}</footer>
+<script>
+const $ = (id) => document.getElementById(id);
+async function check() {
+  show('checking');
+  try {
+    const r = await fetch('/coopanion/check-update', { cache: 'no-store' });
+    const d = await r.json();
+    if (!d.ok) {
+      $('errMsg').textContent = d.error || '未知错误';
+      show('error');
+      return;
+    }
+    if (!d.hasUpdate) {
+      $('uptodate').querySelector('.current-chip').textContent = 'v' + d.current;
+      show('uptodate');
+      return;
+    }
+    $('curV').textContent = d.current;
+    $('latV').textContent = d.latest;
+    $('relName').textContent = d.releaseName ? d.releaseName : '';
+    $('relNotes').textContent = d.releaseNotes ? d.releaseNotes.trim() : '（该 Release 没有写更新说明）';
+    $('relUrl').href = d.releaseUrl;
+    show('available');
+  } catch (e) {
+    $('errMsg').textContent = String(e.message || e);
+    show('error');
+  }
+}
+async function doUpdate() {
+  $('updateBtn').disabled = true;
+  show('updating');
+  try {
+    const r = await fetch('/coopanion/do-update', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      $('errMsg').textContent = d.error || '更新失败';
+      show('error');
+      return;
+    }
+    $('fromV').textContent = d.from || '';
+    $('toV').textContent = d.to || '';
+    show('done');
+  } catch (e) {
+    $('errMsg').textContent = String(e.message || e);
+    show('error');
+  }
+}
+function show(id) {
+  ['checking','uptodate','available','error','updating','done'].forEach(s => $(s).classList.toggle('hidden', s !== id));
+}
+window.addEventListener('DOMContentLoaded', () => {
+  $('updateBtn').addEventListener('click', doUpdate);
+  check();
+});
+</script>
+</body>
+</html>`;
 }
 

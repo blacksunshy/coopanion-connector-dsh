@@ -28,7 +28,14 @@ export type HostFrame =
   /** DSH is waiting for the person to answer a question. */
   | { t: 'question'; text: string }
   /** The turn ended badly. */
-  | { t: 'error'; text: string };
+  | { t: 'error'; text: string }
+  /**
+   * Generic one-shot announcement the Host wants the pet to surface.
+   * `kind` groups them (e.g. "update-available") so a pet can pick which to show;
+   * `text` is always safe to render; `url` is optional action destination.
+   * Frames of unknown `kind` should be silently dropped — Host may add more.
+   */
+  | { t: 'notice'; kind: string; text: string; url?: string };
 
 /** Pet→Host frames. */
 export type PetFrame =

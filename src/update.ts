@@ -68,10 +68,16 @@ export interface CheckUpdateResult {
   latest: string;
   hasUpdate: boolean;
   releaseUrl: string;
+  /** Human-readable release title, e.g. "v0.2.6 — 自动检查更新". */
+  releaseName?: string;
+  /** Raw markdown body of the GitHub Release — what the UI shows as 更新介绍. */
+  releaseNotes?: string;
+  /** ISO 8601 published timestamp from GitHub. */
+  publishedAt?: string;
   error?: string;
 }
 
-/** Query GitHub Releases for the newest published tag. */
+/** Query GitHub Releases for the newest published tag, including body/notes. */
 export async function checkUpdate(): Promise<CheckUpdateResult> {
   const cur = currentVersion();
   try {
@@ -82,7 +88,7 @@ export async function checkUpdate(): Promise<CheckUpdateResult> {
     if (!res.ok) {
       return { ok: false, current: cur, latest: '', hasUpdate: false, releaseUrl: '', error: `HTTP ${res.status}` };
     }
-    const data = (await res.json()) as { tag_name: string; html_url: string };
+    const data = (await res.json()) as { tag_name: string; html_url: string; name?: string; body?: string; published_at?: string };
     const latest = data.tag_name.replace(/^v/, '');
     return {
       ok: true,
@@ -90,6 +96,9 @@ export async function checkUpdate(): Promise<CheckUpdateResult> {
       latest,
       hasUpdate: isNewer(latest, cur),
       releaseUrl: data.html_url,
+      releaseName: data.name ?? undefined,
+      releaseNotes: data.body ?? undefined,
+      publishedAt: data.published_at ?? undefined,
     };
   } catch (err) {
     return { ok: false, current: cur, latest: '', hasUpdate: false, releaseUrl: '', error: (err as Error).message };
