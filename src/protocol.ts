@@ -29,6 +29,8 @@ export type HostFrame =
   | { t: 'question'; text: string }
   /** The turn ended badly. */
   | { t: 'error'; text: string }
+  /** Answers a `new`: the Host created this session and now owns it. */
+  | { t: 'created'; id: string; session: string }
   /**
    * Generic one-shot announcement the Host wants the pet to surface.
    * `kind` groups them (e.g. "update-available") so a pet can pick which to show;
@@ -57,6 +59,11 @@ export type PetFrame =
    * Host refuses a session that is not live with a `refused` frame.
    */
   | { t: 'pick'; session: string }
+  /**
+   * Start a new conversation on the DSH side and make it the owner, so the pet has somewhere to
+   * speak when every session it knew has been archived. `id` is echoed in `created`/`refused`.
+   */
+  | { t: 'new'; id: string }
   /** Ask for every live session, so the pet can offer an explicit picker (DSH emits no event on
    *  silent tab switches, so auto-follow alone cannot see them). */
   | { t: 'list-sessions' }
@@ -91,6 +98,9 @@ export function parsePetFrame(raw: string): PetFrame | null {
     case 'pick':
       if (typeof frame.session !== 'string' || !frame.session) return null;
       return { t: 'pick', session: frame.session.slice(0, 128) };
+    case 'new':
+      if (typeof frame.id !== 'string' || !frame.id) return null;
+      return { t: 'new', id: frame.id.slice(0, 64) };
     case 'list-sessions':
       return { t: 'list-sessions' };
     case 'unpin':

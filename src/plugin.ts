@@ -21,6 +21,8 @@ import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
 import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
 import { readForwardState, writeForwardState } from './forward-state.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, reasonText, type HostFrame } from './protocol.ts';
+import { createConversation, type SessionCommandsLike, type WorkspaceLike } from './new-session.ts';
+import { bridgeLogFiles } from './bridge-log.ts';
 import { checkUpdate, currentVersion, performUpdate, type CheckUpdateResult } from './update.ts';
 
 /** Kept for the Host's own checks; a person's message may quote the pet's name in either language. */
@@ -88,11 +90,8 @@ function proveLoad(): void {
     argv: process.argv.slice(0, 6),
     cwd: process.cwd(),
   })}\n`;
-  // Two destinations, so a Host whose data directory differs is still covered.
-  for (const file of [
-    `${process.env.APPDATA ?? ''}\\@deepseek-ai\\dsh-desktop\\logs\\coopanion-bridge.jsonl`,
-    `${process.env.USERPROFILE ?? ''}\\.dsh\\logs\\coopanion-bridge.jsonl`,
-  ]) {
+  // One line per platform destination, so a Host whose data directory differs is still covered.
+  for (const file of bridgeLogFiles()) {
     try {
       appendFileSync(file, line);
     } catch {
@@ -113,10 +112,7 @@ function debug(tag: string, detail?: unknown): void {
   if (!DEBUG_BRIDGE) return;
   try {
     const line = `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, tag, detail })}\n`;
-    for (const file of [
-      `${process.env.APPDATA ?? ''}\\@deepseek-ai\\dsh-desktop\\logs\\coopanion-bridge.jsonl`,
-      `${process.env.USERPROFILE ?? ''}\\.dsh\\logs\\coopanion-bridge.jsonl`,
-    ]) {
+    for (const file of bridgeLogFiles()) {
       try { appendFileSync(file, line); } catch { /* path unwritable on this host */ }
     }
   } catch { /* best-effort; never let debug break the bridge */ }
@@ -207,6 +203,14 @@ export default {
   apply(root: DshContext): void {
     proveLoad();
     const agents = new AgentRegistry();
+    // DSH's archive set, read at each ownership decision: an archived Session stays live but every
+    // model step proposed for it is rejected, so speaking into one would end as `blocked`.
+    agents.setArchivedCheck((id) => {
+      const registry = root.get('workspaceRegistry') as { archivedSessionIds?: readonly string[] } | undefined;
+      return registry?.archivedSessionIds?.includes(id) ?? false;
+    });
+    /** The directory of the newest conversation seen, so a pet-made session lands in the same project. */
+    let knownCwd: string | null = null;
     // 恢复上次的转发开关；没有状态文件时用 AgentRegistry 的默认值（true，即默认开）
     {
       const persisted = readForwardState();
@@ -243,6 +247,7 @@ export default {
             });
             return null;
           }
+          knownCwd = facts.cwd || knownCwd;
           debug('welcome-ok', facts);
           return facts;
         },
@@ -259,7 +264,7 @@ export default {
               isPinned: agents.isPinned,
               forwarding: agents.forwarding,
             });
-            return 'no conversation is open on the DSH side';
+            return 'no conversation is open on the DSH side; a new one can be started with dsh_new_session';
           }
           if (typeof agent.followup !== 'function') return 'this DSH build cannot accept a message here';
           try {
@@ -279,6 +284,35 @@ export default {
           agents.clearPin();
           return null;
         },
+        createSession: async () => {
+          // The Session Controller is the same in-process path the settings window's Remote call
+          // takes, so a session made here is a first-class one: published in DSH's sidebar and
+          // announced as `agent/created`, which is what moves the owner onto it.
+          const controller = scoped.get('sessionController') as SessionCommandsLike | undefined;
+          const registry = scoped.get('workspaceRegistry') as { list?(): WorkspaceLike[] } | undefined;
+          const workspaces = registry?.list?.() ?? [];
+          const facts = agents.facts();
+          if (facts?.cwd) knownCwd = facts.cwd;
+          debug('create-session', {
+            hasController: Boolean(controller?.commands?.create),
+            workspaces: workspaces.map((workspace) => workspace.id),
+            ownerSession: agents.ownerSession,
+            knownCwd,
+          });
+          const before = agents.ownerSession;
+          const outcome = await createConversation(controller, workspaces, before, knownCwd);
+          if ('reason' in outcome) {
+            // `create` publishes the Session before it attaches it to a Workspace, so an attach
+            // failure leaves a live conversation behind. The pet is bound to it either way; telling
+            // it the creation failed would send it looking for a session that already exists.
+            const after = agents.ownerSession;
+            if (after !== null && after !== before) {
+              log('warn', `created ${after} but DSH could not attach it: ${outcome.reason}`);
+              return { session: after };
+            }
+          }
+          return outcome;
+        },
         log,
       });
       hub = pet;
@@ -288,7 +322,47 @@ export default {
       /** 上一次已经通知过 pet 的版本号，避免同一个新版本反复通知。 */
       let lastNotifiedVersion: string | null = null;
 
-      const disposeUpgrade = scoped.webServer!.registerUpgrade({ path: PET_PATH, handler: allowed(pet.upgrade) });
+      /**
+       * Claim the pet's upgrade route, and keep it claimed.
+       *
+       * A DSH desktop hot reload can leave the previous instance holding the path: the duplicate
+       * registration throws and both instances then drop it, after which the pet's upgrade dies as
+       * a silently destroyed socket. So take over a route this instance does not own, and re-claim
+       * it if it disappears later.
+       */
+      const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade) };
+      const upgradeTable = (): Map<string, unknown> | null => {
+        const table = (scoped.webServer as { upgrades?: unknown }).upgrades;
+        return table instanceof Map ? table : null;
+      };
+      const holdsUpgrade = (): boolean => {
+        const table = upgradeTable();
+        return table === null ? true : table.get(PET_PATH) === upgradeRoute;
+      };
+      const claimUpgrade = (): (() => void) | null => {
+        const table = upgradeTable();
+        if (table !== null && table.has(PET_PATH) && table.get(PET_PATH) !== upgradeRoute) {
+          try {
+            table.delete(PET_PATH);
+            log('warn', `took over a stale upgrade route ${PET_PATH}`);
+          } catch {
+            // a table that refuses deletion still lets registerUpgrade report the conflict
+          }
+        }
+        try {
+          return scoped.webServer!.registerUpgrade(upgradeRoute);
+        } catch (err) {
+          log('warn', `upgrade route ${PET_PATH} not claimed: ${(err as Error).message}`);
+          return null;
+        }
+      };
+      let disposeUpgrade = claimUpgrade();
+      const healRoutes = setInterval(() => {
+        if (holdsUpgrade()) return;
+        log('warn', `upgrade route ${PET_PATH} went missing, re-claiming`);
+        disposeUpgrade = claimUpgrade();
+      }, 5000);
+      healRoutes.unref?.();
 
       /** GET — 自更新页面 HTML 界面；POST — 兼容路由，走 performUpdate。 */
       scoped.webServer!.register({
@@ -342,6 +416,9 @@ export default {
             v: PROTOCOL_VERSION,
             pluginVersion: currentVersion(),
             pet: pet.connected,
+            bound: pet.boundState,
+            route: holdsUpgrade(),
+            pid: process.pid,
             session: facts?.session ?? null,
             forwarding: agents.forwarding,
             updateInfo: lastCheck ? {
@@ -515,7 +592,8 @@ export default {
       if (AUTO_CHECK_ENABLED) schedule();
 
       scoped.effect(() => () => {
-        disposeUpgrade();
+        clearInterval(healRoutes);
+        disposeUpgrade?.();
         pet.close();
         hub = null;
         if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
@@ -547,6 +625,7 @@ export default {
         hasInject: typeof agent.inject === 'function',
       });
       // 子代理判断已在 AgentRegistry.add 内部处理（isSubagent），这里不再重复
+      knownCwd = agent.session?.header?.cwd ?? knownCwd;
       agents.add(String(id), agent as never);
       // If the pet is waiting (connected but no session yet), give it a late `ready` now.
       const facts = agents.facts();

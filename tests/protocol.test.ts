@@ -13,6 +13,7 @@ describe('a frame from the pet', () => {
     expect(parsePetFrame(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo' }))).toEqual({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo' });
     expect(parsePetFrame(JSON.stringify({ t: 'say', id: 'a', text: 'hi', from: '大肥鱼' }))).toEqual({ t: 'say', id: 'a', text: 'hi', from: '大肥鱼' });
     expect(parsePetFrame(JSON.stringify({ t: 'ping' }))).toEqual({ t: 'ping' });
+    expect(parsePetFrame(JSON.stringify({ t: 'new', id: 'n1' }))).toEqual({ t: 'new', id: 'n1' });
   });
 
   it('is refused when it is malformed or from another protocol', () => {
@@ -22,6 +23,7 @@ describe('a frame from the pet', () => {
     expect(parsePetFrame(JSON.stringify({ t: 'say', id: 'a' }))).toBeNull();
     expect(parsePetFrame(JSON.stringify({ t: 'hello', name: 'coo' }))).toBeNull();
     expect(parsePetFrame(JSON.stringify({ t: 'unknown' }))).toBeNull();
+    expect(parsePetFrame(JSON.stringify({ t: 'new' }))).toBeNull();
   });
 
   it('names its sender even when it does not say who that is', () => {
@@ -111,6 +113,44 @@ describe('which conversation the pet speaks into', () => {
     agents.remove('a');
     expect(agents.owner).toBeNull();
     expect(agents.facts()).toBeNull();
+  });
+
+  it('is nobody when every open conversation has been archived', () => {
+    const agents = new AgentRegistry();
+    agents.setArchivedCheck((id) => id === 'a' || id === 'b');
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    // Archived Sessions stay live in DSH but refuse every model step, so offering one would mean
+    // the pet's words end as `blocked` with no reply.
+    expect(agents.owner).toBeNull();
+    expect(agents.ownerSession).toBeNull();
+    expect(agents.facts()).toBeNull();
+  });
+
+  it('is the newest conversation that is still open when the owner was archived', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    agents.setArchivedCheck((id) => id === 'b');
+    expect(agents.ownerSession).toBe('a');
+  });
+
+  it('does not let a new archived session steal the owner', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.setArchivedCheck((id) => id === 'b');
+    agents.add('b', agentOf('b'));
+    expect(agents.ownerSession).toBe('a');
+  });
+
+  it('refuses to be pointed at an archived conversation', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    agents.setArchivedCheck((id) => id === 'a');
+    expect(agents.setOwner('a')).toBe(false);
+    expect(agents.forceOwner('a')).toBe(false);
+    expect(agents.ownerSession).toBe('b');
   });
 
   it('is nobody when no conversation is open', () => {

@@ -234,3 +234,39 @@ describe('a pet that unpins', () => {
     expect(await frame).toEqual({ t: 'refused', reason: 'this Host does not support unpinning' });
   });
 });
+
+describe('a pet that asks for a new conversation', () => {
+  it('is told which session the Host created', async () => {
+    const createSession = vi.fn(async () => ({ session: 'session-new' }));
+    const { url } = await listening({ createSession });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'new', id: 'n1' }));
+    expect(await frame).toEqual({ t: 'created', id: 'n1', session: 'session-new' });
+    expect(createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('is told why the Host could not create one', async () => {
+    const { url } = await listening({ createSession: async () => ({ reason: 'DSH refused to create a conversation: session/conflict' }) });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'new', id: 'n2' }));
+    expect(await frame).toEqual({ t: 'refused', id: 'n2', reason: 'DSH refused to create a conversation: session/conflict' });
+  });
+
+  it('gets an answer even when the creator throws', async () => {
+    const { url } = await listening({ createSession: async () => { throw new Error('boom'); } });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'new', id: 'n3' }));
+    expect(await frame).toMatchObject({ t: 'refused', id: 'n3' });
+  });
+
+  it('is refused when this Host cannot create sessions at all', async () => {
+    const { url } = await listening();
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'new', id: 'n4' }));
+    expect(await frame).toEqual({ t: 'refused', id: 'n4', reason: 'this Host cannot create a conversation' });
+  });
+});

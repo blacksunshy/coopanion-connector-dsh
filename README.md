@@ -8,13 +8,15 @@ DeepSeek Harness（DSH）bundle 插件：Coopanion 桌宠桥接的 Host 半区�
 
 | 方向 | 帧 |
 |---|---|
-| Host → 桌宠 | `ready`、`turn-start`、`turn-end`、`reply`、`tool`、`approval`、`question`、`error` |
-| 桌宠 → Host | `hello`、`say`、`ping`；Host 对 `say` 回 `accepted` 或 `refused` |
+| Host → 桌宠 | `ready`、`turn-start`、`turn-end`、`reply`、`tool`、`approval`、`question`、`error`、`created`、`session-list`、`unpinned` |
+| 桌宠 → Host | `hello`、`say`、`pick`、`list-sessions`、`unpin`、`new`、`ping`；Host 对 `say` 回 `accepted` 或 `refused`，对 `new` 回 `created` 或 `refused` |
 
 - 没有桌宠在线时通知直接丢弃、不排队：DSH 的活不等桌宠，重放的回合只会在你已经在控制台读完之后才冒泡。`say` 有回执，桌宠能如实报告"没转交"而不是猜。
 - 文本里已带本 Host 前缀（`…（通过桌宠）说：`）的 `say` 会被拒收：再提交一次就会套两层前缀。
 - `tool` 通知只带工具名和参数名、不带值：到达桌宠的东西会进模型的上下文和事件流，秘密收不回来。
 - 接收 `say` 的对话是"最新的、非子代理的活跃 agent"——回答气泡的子代理是你没打开过的说话人。
+- 没有打开的会话时（例如把所有会话都归档了），`say` 会被拒回，`new` 让桌宠在 DSH 侧开一个新会话：走 `sessionController.commands.create`，落在当前会话所属的 Workspace，建好即成为 owner，桌宠随后收到 `ready`。
+- 已归档的会话不算"打开的会话"：归档只挡住模型调用，agent 还在，所以 owner 只在未归档的活跃会话里挑；桌宠不会把一个已归档会话当成说话对象。
 
 ## 安装
 
@@ -86,12 +88,15 @@ pnpm run build          # 产出 dist/index.cjs
 | **CSWSH 安全修复**（`Origin` 拒绝，issue #6） | **≥ 0.2.9** | 不涉及（但 fatfish 0.6.6 起加了互引提醒） |
 | `relayPerson` 默认 `true`（转发人物的话） | 不涉及（Host 侧不替桌宠做默认） | **≥ 0.6.9**（0.6.6 曾改默认关，0.6.9 改回 true——默认关 = 升级后主路径功能消失） |
 | 会话选择器（`list-sessions` / `pick`）与「解除固定」（`unpin` / `clearPin`） | **≥ 0.2.11** | **≥ 0.6.11**（0.6.10 及更早会把 `session-list` 帧丢掉 → 面板显示"没有打开的会话"） |
+| 没有会话时新建（`new` 帧、桌宠侧 `dsh_new_session` 与面板「新建会话」）；已归档会话不再作为 owner | **≥ 0.2.12** | **≥ 0.6.12** |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
 > ⚠️ **安全建议**：如果你同时在用桌宠侧 fatfish 扩展，请把两边都升到上表最新列——**本插件 v0.2.9 修复了 CSWSH 安全漏洞**（任意网页可构造 WS 升级劫持桥接）。fatfish 侧 `relayPerson` 0.6.6 曾改成默认关（升级后打字不自动转 DSH），0.6.9 已改回 `true`，`relayPet`（桌宠→DSH，容易形成两嘴互聊循环）仍默认关。
 >
 > **0.2.11 起**还提供了会话列表与"解除固定"：DSH 只切 tab 不说话时不发任何事件，插件猜不到你在看哪个会话，所以由桌宠主动拉列表、显式选择；「解除固定」也会真正清掉 Host 侧 pin（0.2.10 及更早只改桌宠本地状态）。
+>
+> **0.2.12 起**桌宠可以在没有打开的会话时让 DSH 新建一个（PR #7，致谢 @ink1453），并且升级路由带自愈：DSH 桌面端热重载导致 `/coopanion/pet` 被陈旧实例占用时，本实例会接管并每 5s 自检重认领。
 
 ### 发布到 npm 的要点
 

@@ -51,6 +51,12 @@ export class AgentRegistry {
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   private pinned: boolean = false;
   /**
+   * Whether DSH has archived a session. An archived Session stays live but refuses every model
+   * step, so words submitted there end as `blocked` instead of being answered: the bridge must not
+   * offer one to the pet as somewhere to speak.
+   */
+  private archived: (id: string) => boolean = () => false;
+  /**
    * Whether pet words are auto-forwarded into DSH sessions.
    *
    * Default **true** — 0.2.10 改回默认开，因为默认关等于"升级后主路径功能消失"
@@ -76,6 +82,11 @@ export class AgentRegistry {
     return this.pinned;
   }
 
+  /** The archive set as DSH owns it; read at each decision, since archiving happens while we run. */
+  setArchivedCheck(check: (id: string) => boolean): void {
+    this.archived = check;
+  }
+
   /**
    * A new agent appeared. Subagents join the live map but do not steal the owner from an
    * unpinned non-subagent. An unpinned registry still points at the newest non-subagent; a
@@ -84,7 +95,7 @@ export class AgentRegistry {
   add(id: string, agent: LiveAgent): void {
     this.live.set(id, agent);
     if (this.isSubagent(agent)) return;
-    if (!this.pinned) this.ownerId = id;
+    if (!this.pinned && !this.archived(id)) this.ownerId = id;
   }
 
   remove(id: string): void {
@@ -104,13 +115,21 @@ export class AgentRegistry {
   }
 
   get owner(): LiveAgent | null {
-    if (this.ownerId === null) return null;
-    const a = this.live.get(this.ownerId);
-    return a && !this.isSubagent(a) ? a : null;
+    if (this.ownerId !== null) {
+      const current = this.live.get(this.ownerId);
+      if (current && !this.isSubagent(current) && !this.archived(this.ownerId)) return current;
+    }
+    // The owner was archived or disposed since it was chosen. A conversation the person can still
+    // type into is a better answer than none, so take the newest one that is still open.
+    for (const [id, agent] of [...this.live.entries()].reverse()) {
+      if (!this.isSubagent(agent) && !this.archived(id)) return agent;
+    }
+    return null;
   }
 
   get ownerSession(): string | null {
-    return this.ownerId;
+    const agent = this.owner;
+    return agent === null ? null : String(agent.session.id ?? '') || this.ownerId;
   }
 
   /** How many sessions are currently in the live map — useful for debug logging. */
@@ -133,6 +152,7 @@ export class AgentRegistry {
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
+    if (this.archived(id)) return false;
     this.ownerId = id;
     this.pinned = true;
     return true;
@@ -154,12 +174,13 @@ export class AgentRegistry {
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
+    if (this.archived(id)) return false;
     this.pinned = false;
     this.ownerId = id;
     return true;
   }
 
-  /** Unconditionally clears the pin; used when the pet manually unpins (future). */
+  /** Unconditionally clears the pin; used when the pet manually unpins. */
   clearPin(): void {
     this.pinned = false;
   }
@@ -186,10 +207,14 @@ export class AgentRegistry {
    * All live sessions, for the pet's explicit session picker. DSH emits no event when a person
    * merely switches tabs, so auto-follow cannot see silent navigation — the picker lets the pet
    * switch the owner deliberately instead of waiting for a signal DSH never sends.
+   *
+   * Archived sessions are excluded: one stays live but refuses every model step, so words
+   * submitted there end as `blocked` instead of being answered.
    */
   listSessions(): Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }> {
     const out: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }> = [];
     for (const [id, agent] of this.live) {
+      if (this.archived(id)) continue;
       const sub = this.isSubagent(agent);
       out.push({
         id,

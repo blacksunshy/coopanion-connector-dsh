@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 /** A DSH-like context: only the verbs this plugin reaches for. */
-function fakeContext(): {
+function fakeContext(services: Record<string, unknown> = {}): {
   ctx: unknown;
   upgrade: (path: string) => (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
   agents: Map<string, { session: { id: string; cwd?: string; parent?: unknown }; followup(message: unknown): void; injected: unknown[] }>;
@@ -39,7 +39,7 @@ function fakeContext(): {
   const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   const agents = new Map<string, { session: { id: string; cwd?: string; parent?: unknown }; followup(message: unknown): void; injected: unknown[] }>();
   const ctx = {
-    inject(services: string[], callback: (scoped: unknown) => void) {
+    inject(names: string[], callback: (scoped: unknown) => void) {
       const scoped = {
         webServer: {
           registerUpgrade(route: { path: string; handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void }) {
@@ -53,8 +53,8 @@ function fakeContext(): {
         effect(callback: () => void | (() => void)) {
           callback();
         },
-        get() {
-          return undefined;
+        get(name: string) {
+          return services[name];
         },
       };
       callback(scoped);
@@ -66,8 +66,8 @@ function fakeContext(): {
       listeners.set(event, [...listeners.get(event) ?? [], listener]);
       return () => {};
     },
-    get() {
-      return undefined;
+    get(name: string) {
+      return services[name];
     },
     emit(event: string, ...args: unknown[]) {
       for (const listener of listeners.get(event) ?? []) listener(...args);
@@ -77,13 +77,13 @@ function fakeContext(): {
 }
 
 /** Loads the plugin against a fake context and a real socket. */
-async function loaded(): Promise<{
+async function loaded(services: Record<string, unknown> = {}): Promise<{
   emit: (event: string, ...args: unknown[]) => void;
   listeners: Map<string, Array<(...args: unknown[]) => void>>;
   agents: ReturnType<typeof fakeContext>['agents'];
   connect: () => Promise<{ socket: WebSocket; frames: Array<Record<string, unknown>>; send: (frame: unknown) => void }>;
 }> {
-  const { ctx, upgrade, agents, listeners } = fakeContext();
+  const { ctx, upgrade, agents, listeners } = fakeContext(services);
   (plugin as { apply(ctx: unknown): void }).apply(ctx);
   const handler = upgrade(PET_PATH);
   expect(handler).toBeTypeOf('function');
@@ -153,6 +153,80 @@ describe('the plugin as DSH loads it', () => {
     emit('agent/created', { agent: agentOf('session-1') });
     await until(() => frames.length > 0);
     expect(frames[0]).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1' });
+  });
+});
+
+describe('a conversation the pet asks DSH to start', () => {
+  it('is created in the owning Workspace and handed to the pet', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const { emit, connect } = await loaded({
+      // DSH's own sequence: the Session Controller publishes the Agent while creating it, which is
+      // what lifts this bridge's owner; the plugin's answer only says which session it was.
+      sessionController: {
+        commands: {
+          create: async (request: Record<string, unknown>) => {
+            requests.push(request);
+            emit('agent/created', { agent: agentOf('session-new') });
+            return { sessionId: 'session-new' };
+          },
+        },
+      },
+      workspaceRegistry: {
+        list: () => [{ id: 'ws-1', path: '/w/session-1', sessionIds: ['session-1'] }],
+      },
+    });
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.length > 0);
+    send({ t: 'new', id: 'n1' });
+    await until(() => frames.some((frame) => frame.t === 'created'));
+    expect(requests).toEqual([{ workspaceId: 'ws-1' }]);
+    expect(frames.filter((frame) => frame.t === 'created')).toEqual([{ t: 'created', id: 'n1', session: 'session-new' }]);
+    // The pet is told it is bound to the new conversation, not only that it was created.
+    expect(frames.filter((frame) => frame.t === 'ready').map((frame) => frame.session)).toEqual(['session-1', 'session-new']);
+  });
+
+  it('still names the session when the Workspace attach failed after creation', async () => {
+    const { emit, connect } = await loaded({
+      sessionController: {
+        commands: {
+          // DSH publishes the Session first and attaches it to a Workspace afterwards; a failed
+          // attach leaves a live conversation and a thrown error.
+          create: async () => {
+            emit('agent/created', { agent: agentOf('session-orphan') });
+            throw new Error('session "session-orphan" was created but could not attach to workspace "ws-1"');
+          },
+        },
+      },
+      workspaceRegistry: { list: () => [{ id: 'ws-1', path: '/w/session-1', sessionIds: ['session-1'] }] },
+    });
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.length > 0);
+    send({ t: 'new', id: 'n3' });
+    await until(() => frames.some((frame) => frame.t === 'created' || frame.t === 'refused'));
+    expect(frames.find((frame) => frame.t === 'created' || frame.t === 'refused')).toEqual({
+      t: 'created',
+      id: 'n3',
+      session: 'session-orphan',
+    });
+  });
+
+  it('refuses with a reason a Host without a Session Controller can be read from', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.length > 0);
+    send({ t: 'new', id: 'n2' });
+    await until(() => frames.some((frame) => frame.t === 'refused'));
+    expect(frames.find((frame) => frame.t === 'refused')).toMatchObject({
+      t: 'refused',
+      id: 'n2',
+      reason: 'this DSH build has no session controller, so the pet cannot create a conversation',
+    });
   });
 });
 

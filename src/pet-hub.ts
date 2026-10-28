@@ -36,6 +36,12 @@ export interface PetHubOptions {
   listSessions?(): { sessions: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }>; pinned: boolean };
   /** The pet asked to drop the pin so auto-follow takes over again; return null when accepted. */
   unpin?(): string | null;
+  /**
+   * The pet asked for a new conversation. Resolves the created session's id, or the refusal
+   * reason; the caller owns both the creation and making the result the owner, so the `ready`
+   * frame the pet needs arrives through `notifyBound` like any other owner change.
+   */
+  createSession?(): Promise<{ session: string } | { reason: string }>;
   log(level: 'info' | 'warn', text: string): void;
   /** The upgrade handler of another server, when the caller owns one (tests, embedding). */
   server?: WebSocketServer;
@@ -163,6 +169,19 @@ export class PetHub {
         }
         case 'ping':
           return;
+        case 'new': {
+          const create = this.opts.createSession;
+          const settled = create === undefined
+            ? Promise.resolve({ reason: 'this Host cannot create a conversation' })
+            : create().catch((err: Error) => ({ reason: `DSH failed to create a conversation: ${err.message}` }));
+          void settled.then((outcome) => {
+            if (ws.readyState !== ws.OPEN) return;
+            ws.send(JSON.stringify('session' in outcome
+              ? { t: 'created', id: frame.id, session: outcome.session } satisfies HostFrame
+              : { t: 'refused', id: frame.id, reason: outcome.reason } satisfies HostAck));
+          });
+          return;
+        }
         case 'pick': {
           // `pick` resolves `null` on acceptance, so absence must be tested explicitly: `??`
           // would turn an accepted pick into the "unsupported" refusal.
