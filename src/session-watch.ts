@@ -52,13 +52,15 @@ export class AgentRegistry {
   private pinned: boolean = false;
   /**
    * Whether pet words are auto-forwarded into DSH sessions.
-   * Default **false** — the user must opt in. Rationale: the pet is a second mouth,
-   * not a silent input channel. When forwarding is on, every pet `say` becomes a `user/message`
-   * on the owning agent with no way for the model to tell it apart from a real person. Default
-   * off avoids the "both sides answer at once" confusion described in Coopanion's honest
-   * epistemology note: infrastructure should only state facts it can confirm.
+   *
+   * Default **true** — 0.2.10 改回默认开，因为默认关等于"升级后主路径功能消失"
+   * （用户升级后桥明明连着，打字却不自动转 DSH，必须手动开配置才恢复）。
+   *
+   * 用户关掉的开关会被持久化到 profile 下 `coopanion-forward.json`，
+   * 下次启动由 Host 在 `apply()` 里用 `toggleForward(persisted)` 覆盖这个默认值。
+   * 所以这个 `true` 只管"从没设置过"的情况；一旦用户显式切过，持久化生效。
    */
-  private forward: boolean = false;
+  private forward: boolean = true;
 
   /** Forward pet's words into DSH sessions (opt-in). */
   get forwarding(): boolean { return this.forward; }

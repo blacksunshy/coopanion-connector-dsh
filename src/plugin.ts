@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
 import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
+import { readForwardState, writeForwardState } from './forward-state.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, reasonText, type HostFrame } from './protocol.ts';
 import { checkUpdate, currentVersion, performUpdate, type CheckUpdateResult } from './update.ts';
 
@@ -202,6 +203,11 @@ export default {
   apply(root: DshContext): void {
     proveLoad();
     const agents = new AgentRegistry();
+    // 恢复上次的转发开关；没有状态文件时用 AgentRegistry 的默认值（true，即默认开）
+    {
+      const persisted = readForwardState();
+      if (persisted !== null) agents.toggleForward(persisted);
+    }
     let hub: PetHub | null = null;
     const pending: HostFrame[] = [];
     /** The last `user/message` DSH appended, used as the template for the pet's own submissions. */
@@ -240,7 +246,7 @@ export default {
           const body = text.trim();
           if (!body) return 'empty message';
           if (carriesBridgePrefix(body)) return 'this line already carries the bridge\'s prefix, so a second one would be nested around it';
-          if (!agents.forwarding) return 'auto-forward disabled — Coo must call the tool to deliver words';
+          if (!agents.forwarding) return 'auto-forward disabled — open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel';
           const agent = agents.owner;
           if (!agent) {
             debug('say-refused-no-owner', {
@@ -371,6 +377,7 @@ export default {
               }
             } catch { /* malformed body → flip */ }
             const next = agents.toggleForward(target);
+            writeForwardState(next);
             // 告诉桌宠状态变了
             hub?.send({ t: 'notice', kind: 'forward-toggle', text: next ? '自动递送已开启' : '自动递送已关闭' });
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
