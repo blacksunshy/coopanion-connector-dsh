@@ -144,16 +144,22 @@ describe('which conversation the pet speaks into', () => {
       expect(agents.ownerSession).toBe('a');
     });
 
-    it('does not snap when the registry is pinned by an explicit pick', () => {
+    it('does not snap when pinned by explicit pick ... until the target session becomes active', () => {
       const agents = new AgentRegistry();
       agents.add('a', agentOf('a'));
       agents.add('b', agentOf('b'));
       // pet pinned 'a' explicitly
       agents.setOwner('a');
       expect(agents.isPinned).toBe(true);
-      // newer 'b' fires activity — auto-follow must not steal
-      expect(agents.forceOwner('b')).toBe(false);
+      // A brand-new 'c' appears while pinned — add() must not overwrite (pin still protects)
+      agents.add('c', agentOf('c'));
       expect(agents.ownerSession).toBe('a');
+      expect(agents.isPinned).toBe(true);
+      // BUT if 'b' fires real activity (forceOwner) — the pin clears and owner snaps to 'b'
+      // because the user's active behaviour is a stronger signal than a stale pin.
+      expect(agents.forceOwner('b')).toBe(true);
+      expect(agents.ownerSession).toBe('b');
+      expect(agents.isPinned).toBe(false);   // ← the pin falls away
     });
 
     it('does not steal from a pinned session when a brand-new session appears', () => {

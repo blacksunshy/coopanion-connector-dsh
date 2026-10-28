@@ -3956,6 +3956,24 @@ var AgentRegistry = class {
   ownerId = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   pinned = false;
+  /**
+   * Whether pet words are auto-forwarded into DSH sessions.
+   * Default **false** — the user must opt in. Rationale: the pet is a second mouth,
+   * not a silent input channel. When forwarding is on, every pet `say` becomes a `user/message`
+   * on the owning agent with no way for the model to tell it apart from a real person. Default
+   * off avoids the "both sides answer at once" confusion described in Coopanion's honest
+   * epistemology note: infrastructure should only state facts it can confirm.
+   */
+  forward = false;
+  /** Forward pet's words into DSH sessions (opt-in). */
+  get forwarding() {
+    return this.forward;
+  }
+  /** Toggle; returns the new value. */
+  toggleForward(next) {
+    this.forward = next ?? !this.forward;
+    return this.forward;
+  }
   /** True while the pet has explicitly pinned one session. */
   get isPinned() {
     return this.pinned;
@@ -4013,14 +4031,19 @@ var AgentRegistry = class {
    * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
    * or the model replied there. Silent navigation (no events from the target session) does not
    * trigger a move — this only reacts to real activity. Returns true when moved, false when the
-   * registry is pinned, the session is not live, or it is a subagent.
+   * session is not live, it is a subagent, or it is already the owner.
+   *
+   * When it *does* move, it also clears the pin. A pin was either set explicitly (pet said "hold
+   * this one") or accumulated as a side effect of the pet syncing its own owner — the user's
+   * active behaviour on another session is a stronger signal, so the old pin falls away. The pin
+   * still protects against `agent/created` stealing, which is what it was built for.
    */
   forceOwner(id) {
-    if (this.pinned) return false;
     if (id === this.ownerId) return false;
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
+    this.pinned = false;
     this.ownerId = id;
     return true;
   }
@@ -4304,14 +4327,17 @@ var plugin_default = {
           const body = text.trim();
           if (!body) return "empty message";
           if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
+          if (!agents.forwarding) return "auto-forward disabled \u2014 Coo must call the tool to deliver words";
           const agent = agents.owner;
           if (!agent) return "no conversation is open on the DSH side";
           if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
           try {
             await resolveFactory();
             agent.followup(buildUserMessage(`${from}\uFF08\u901A\u8FC7\u684C\u5BA0\uFF09\u8BF4\uFF1A${body}`, userTemplate));
+            hub?.send({ t: "notice", kind: "forwarded", text: `\u5DF2\u9012\u9001\u5230 DSH\uFF08\u4F1A\u8BDD ${agents.ownerSession ?? "?"}\uFF09\uFF1A${body.slice(0, 80)}${body.length > 80 ? "\u2026" : ""}` });
             return null;
           } catch (err) {
+            hub?.send({ t: "notice", kind: "forward-failed", text: `\u9012\u9001\u5931\u8D25\uFF1A${err.message}` });
             return `DSH refused the message: ${err.message}`;
           }
         },
@@ -4370,6 +4396,7 @@ var plugin_default = {
             pluginVersion: currentVersion(),
             pet: pet.connected,
             session: facts?.session ?? null,
+            forwarding: agents.forwarding,
             updateInfo: lastCheck ? {
               hasUpdate: lastCheck.hasUpdate,
               current: lastCheck.current,
@@ -4380,6 +4407,40 @@ var plugin_default = {
             } : null,
             updateUrl: "/coopanion/update"
           }));
+        }
+      });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/forward",
+        handler: (req, res) => {
+          if (req.method !== "POST") {
+            res.writeHead(405, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "use POST" }));
+            return;
+          }
+          let target;
+          try {
+            if (req.headers["content-length"]) {
+            }
+          } catch {
+          }
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk.toString();
+          });
+          req.on("end", () => {
+            try {
+              if (body) {
+                const parsed = JSON.parse(body);
+                if (typeof parsed.on === "boolean") target = parsed.on;
+              }
+            } catch {
+            }
+            const next = agents.toggleForward(target);
+            hub?.send({ t: "notice", kind: "forward-toggle", text: next ? "\u81EA\u52A8\u9012\u9001\u5DF2\u5F00\u542F" : "\u81EA\u52A8\u9012\u9001\u5DF2\u5173\u95ED" });
+            res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+            res.end(JSON.stringify({ ok: true, forwarding: next }));
+          });
         }
       });
       scoped.webServer.register({
@@ -4471,7 +4532,7 @@ var plugin_default = {
       }
       if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
         const agent = agents.liveGet(id);
-        if (agent && !agents.isSubagent(agent) && !agents.isPinned) {
+        if (agent && !agents.isSubagent(agent)) {
           if (agents.forceOwner(id)) {
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);

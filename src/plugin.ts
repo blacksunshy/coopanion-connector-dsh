@@ -187,14 +187,18 @@ export default {
           const body = text.trim();
           if (!body) return 'empty message';
           if (carriesBridgePrefix(body)) return 'this line already carries the bridge\'s prefix, so a second one would be nested around it';
+          if (!agents.forwarding) return 'auto-forward disabled — Coo must call the tool to deliver words';
           const agent = agents.owner;
           if (!agent) return 'no conversation is open on the DSH side';
           if (typeof agent.followup !== 'function') return 'this DSH build cannot accept a message here';
           try {
             await resolveFactory();
             agent.followup(buildUserMessage(`${from}（通过桌宠）说：${body}`, userTemplate));
+            // 告诉桌宠它的话已经递到 DSH 了——让 Coo 知道这件事"真的发生了"。
+            hub?.send({ t: 'notice', kind: 'forwarded', text: `已递送到 DSH（会话 ${agents.ownerSession ?? '?'}）：${body.slice(0, 80)}${body.length > 80 ? '…' : ''}` });
             return null;
           } catch (err) {
+            hub?.send({ t: 'notice', kind: 'forward-failed', text: `递送失败：${(err as Error).message}` });
             return `DSH refused the message: ${(err as Error).message}`;
           }
         },
@@ -263,6 +267,7 @@ export default {
             pluginVersion: currentVersion(),
             pet: pet.connected,
             session: facts?.session ?? null,
+            forwarding: agents.forwarding,
             updateInfo: lastCheck ? {
               hasUpdate: lastCheck.hasUpdate,
               current: lastCheck.current,
@@ -273,6 +278,43 @@ export default {
             } : null,
             updateUrl: '/coopanion/update',
           }));
+        },
+      });
+      /**
+       * Toggle auto-forward on/off. When the pet is connected it also gets a notice so it knows
+       * the gate has moved — honest epistemology: state changes announce themselves.
+       */
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/forward',
+        handler: (req, res) => {
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'use POST' }));
+            return;
+          }
+          let target: boolean | undefined;
+          try {
+            if (req.headers['content-length']) {
+              // Best-effort — a plain fetch() without JSON body still gives us undefined here.
+            }
+          } catch { /* ignore */ }
+          // Default behaviour: if the caller sent no body, just flip. {on: true/false} wins.
+          let body = '';
+          req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              if (body) {
+                const parsed = JSON.parse(body) as { on?: unknown };
+                if (typeof parsed.on === 'boolean') target = parsed.on;
+              }
+            } catch { /* malformed body → flip */ }
+            const next = agents.toggleForward(target);
+            // 告诉桌宠状态变了
+            hub?.send({ t: 'notice', kind: 'forward-toggle', text: next ? '自动递送已开启' : '自动递送已关闭' });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify({ ok: true, forwarding: next }));
+          });
         },
       });
       // Check if a newer release is available on GitHub. Caches result for status + auto-notice.
@@ -375,10 +417,11 @@ export default {
       }
       // Auto-follow：当一个已经存在的会话开始活跃（用户说话 / 模型回复 / 工具调用 / 审批），
       // 而桌宠还在跟着另一个会话时，把 owner 切过来，让桌宠的 status 和转发目标都对齐到
-      // 用户当前在 DSH 里真正操作的那个会话。已 pinned（桌宠显式 pick 过）则不动。
+      // 用户当前在 DSH 里真正操作的那个会话。forceOwner 内部会把 pinned 清掉——用户在别的
+      // 会话说话这个行为，比之前的 pin（无论显式还是桌宠同步来的）表达更强的当前意图。
       if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
         const agent = agents.liveGet(id);
-        if (agent && !agents.isSubagent(agent) && !agents.isPinned) {
+        if (agent && !agents.isSubagent(agent)) {
           if (agents.forceOwner(id)) {
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);

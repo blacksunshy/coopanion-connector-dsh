@@ -50,6 +50,24 @@ export class AgentRegistry {
   private ownerId: string | null = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   private pinned: boolean = false;
+  /**
+   * Whether pet words are auto-forwarded into DSH sessions.
+   * Default **false** — the user must opt in. Rationale: the pet is a second mouth,
+   * not a silent input channel. When forwarding is on, every pet `say` becomes a `user/message`
+   * on the owning agent with no way for the model to tell it apart from a real person. Default
+   * off avoids the "both sides answer at once" confusion described in Coopanion's honest
+   * epistemology note: infrastructure should only state facts it can confirm.
+   */
+  private forward: boolean = false;
+
+  /** Forward pet's words into DSH sessions (opt-in). */
+  get forwarding(): boolean { return this.forward; }
+
+  /** Toggle; returns the new value. */
+  toggleForward(next?: boolean): boolean {
+    this.forward = next ?? !this.forward;
+    return this.forward;
+  }
 
   /** True while the pet has explicitly pinned one session. */
   get isPinned(): boolean {
@@ -117,14 +135,19 @@ export class AgentRegistry {
    * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
    * or the model replied there. Silent navigation (no events from the target session) does not
    * trigger a move — this only reacts to real activity. Returns true when moved, false when the
-   * registry is pinned, the session is not live, or it is a subagent.
+   * session is not live, it is a subagent, or it is already the owner.
+   *
+   * When it *does* move, it also clears the pin. A pin was either set explicitly (pet said "hold
+   * this one") or accumulated as a side effect of the pet syncing its own owner — the user's
+   * active behaviour on another session is a stronger signal, so the old pin falls away. The pin
+   * still protects against `agent/created` stealing, which is what it was built for.
    */
   forceOwner(id: string): boolean {
-    if (this.pinned) return false;
     if (id === this.ownerId) return false;
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
+    this.pinned = false;
     this.ownerId = id;
     return true;
   }
