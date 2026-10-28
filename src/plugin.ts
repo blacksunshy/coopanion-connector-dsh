@@ -88,6 +88,43 @@ function proveLoad(): void {
   }
 }
 
+/**
+ * A structured debug line, appended to the same jsonl as `proveLoad`.
+ *
+ * Opt in with `DEBUG_BRIDGE=1` (any truthy value). All normal operations keep silent; this is
+ * for diagnosing "no conversation is open" gaps on hosts whose event emission is unclear.
+ * Each line carries a `tag` so the reader can grep for only the signal they care about.
+ */
+const DEBUG_BRIDGE = Boolean(process.env.DEBUG_BRIDGE) || process.env.DEBUG_BRIDGE === '1';
+function debug(tag: string, detail?: unknown): void {
+  if (!DEBUG_BRIDGE) return;
+  try {
+    const line = `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, tag, detail })}\n`;
+    for (const file of [
+      `${process.env.APPDATA ?? ''}\\@deepseek-ai\\dsh-desktop\\logs\\coopanion-bridge.jsonl`,
+      `${process.env.USERPROFILE ?? ''}\\.dsh\\logs\\coopanion-bridge.jsonl`,
+    ]) {
+      try { appendFileSync(file, line); } catch { /* path unwritable on this host */ }
+    }
+  } catch { /* best-effort; never let debug break the bridge */ }
+}
+
+/** JSON.stringify that tolerates circular refs — replaces them with `[Circular]`. */
+function safeStringify(value: unknown, space: number = 0): string {
+  const seen = new WeakSet<object>();
+  try {
+    return JSON.stringify(value, (_k: string, v: unknown) => {
+      if (typeof v === 'object' && v !== null) {
+        if (seen.has(v as object)) return '[Circular]';
+        seen.add(v as object);
+      }
+      return v;
+    }, space);
+  } catch {
+    return String(value);
+  }
+}
+
 /** The module whose `createUserMessage` builds the exact user-role message `followup` accepts. */
 const LLM_MODULE = '@deepseek-ai/dsh-llm';
 
@@ -180,7 +217,15 @@ export default {
       const pet = new PetHub({
         welcome: () => {
           const facts = agents.facts();
-          if (!facts) return null;
+          if (!facts) {
+            debug('welcome-null', {
+              liveCount: agents.liveSize,
+              ownerSession: agents.ownerSession,
+              isPinned: agents.isPinned,
+            });
+            return null;
+          }
+          debug('welcome-ok', facts);
           return facts;
         },
         say: async (text, from) => {
@@ -189,7 +234,15 @@ export default {
           if (carriesBridgePrefix(body)) return 'this line already carries the bridge\'s prefix, so a second one would be nested around it';
           if (!agents.forwarding) return 'auto-forward disabled — Coo must call the tool to deliver words';
           const agent = agents.owner;
-          if (!agent) return 'no conversation is open on the DSH side';
+          if (!agent) {
+            debug('say-refused-no-owner', {
+              liveCount: agents.liveSize,
+              ownerSession: agents.ownerSession,
+              isPinned: agents.isPinned,
+              forwarding: agents.forwarding,
+            });
+            return 'no conversation is open on the DSH side';
+          }
           if (typeof agent.followup !== 'function') return 'this DSH build cannot accept a message here';
           try {
             await resolveFactory();
@@ -375,6 +428,7 @@ export default {
         if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
       });
       log('info', `bridge listening on ${PET_PATH}`);
+      debug('apply-done', { petPath: PET_PATH, hasWebServer: true });
     });
 
     root.effect(() => () => {
@@ -384,7 +438,21 @@ export default {
     root.on('agent/created', ((payload: CreatedPayload) => {
       const agent = payload?.agent;
       const id = agent?.session?.id;
-      if (!agent || !id) return;
+      if (!agent || !id) {
+        debug('agent-created-skipped', {
+          hasAgent: Boolean(agent),
+          sessionId: agent?.session?.id ?? null,
+          sessionKeys: agent ? Object.keys(agent as object) : null,
+          rawPayload: safeStringify(payload),
+        });
+        return;
+      }
+      debug('agent-created', {
+        id: String(id),
+        isSubagent: agent.session?.header?.parentSession || agent.session?.header?.origin === 'subagent',
+        hasFollowup: typeof agent.followup === 'function',
+        hasInject: typeof agent.inject === 'function',
+      });
       // 子代理判断已在 AgentRegistry.add 内部处理（isSubagent），这里不再重复
       agents.add(String(id), agent as never);
       // If the pet is waiting (connected but no session yet), give it a late `ready` now.
@@ -394,6 +462,7 @@ export default {
 
     root.on('session/disposed', ((session: { id?: string }) => {
       const id = session?.id;
+      debug('session-disposed', { id: String(id ?? ''), wasOwner: Boolean(id && agents.ownerSession === id) });
       const wasOwner = id && agents.ownerSession === id;
       if (id) agents.remove(String(id));
       // If the disposed session was the owner, the pet may need re-binding or unbinding.
@@ -415,14 +484,17 @@ export default {
         // 即便这个 session 不是 owner，也缓存一下，切过来时能直接读到
         return;
       }
+      debug('session-event', { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
       // Auto-follow：当一个已经存在的会话开始活跃（用户说话 / 模型回复 / 工具调用 / 审批），
       // 而桌宠还在跟着另一个会话时，把 owner 切过来，让桌宠的 status 和转发目标都对齐到
       // 用户当前在 DSH 里真正操作的那个会话。forceOwner 内部会把 pinned 清掉——用户在别的
       // 会话说话这个行为，比之前的 pin（无论显式还是桌宠同步来的）表达更强的当前意图。
       if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
         const agent = agents.liveGet(id);
+        debug('auto-follow-check', { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {
           if (agents.forceOwner(id)) {
+            debug('auto-follow-moved', { newOwner: id });
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);
           }

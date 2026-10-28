@@ -4009,6 +4009,10 @@ var AgentRegistry = class {
   get ownerSession() {
     return this.ownerId;
   }
+  /** How many sessions are currently in the live map — useful for debug logging. */
+  get liveSize() {
+    return this.live.size;
+  }
   /** The agent currently tracked by id, or undefined when never seen or already disposed. */
   liveGet(id) {
     return this.live.get(id);
@@ -4138,7 +4142,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.6") return "0.2.6";
+  if ("0.2.7") return "0.2.7";
   try {
     const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4268,6 +4272,38 @@ function proveLoad() {
     }
   }
 }
+var DEBUG_BRIDGE = Boolean(process.env.DEBUG_BRIDGE) || process.env.DEBUG_BRIDGE === "1";
+function debug(tag, detail) {
+  if (!DEBUG_BRIDGE) return;
+  try {
+    const line = `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, tag, detail })}
+`;
+    for (const file of [
+      `${process.env.APPDATA ?? ""}\\@deepseek-ai\\dsh-desktop\\logs\\coopanion-bridge.jsonl`,
+      `${process.env.USERPROFILE ?? ""}\\.dsh\\logs\\coopanion-bridge.jsonl`
+    ]) {
+      try {
+        (0, import_node_fs2.appendFileSync)(file, line);
+      } catch {
+      }
+    }
+  } catch {
+  }
+}
+function safeStringify(value, space = 0) {
+  const seen = /* @__PURE__ */ new WeakSet();
+  try {
+    return JSON.stringify(value, (_k, v) => {
+      if (typeof v === "object" && v !== null) {
+        if (seen.has(v)) return "[Circular]";
+        seen.add(v);
+      }
+      return v;
+    }, space);
+  } catch {
+    return String(value);
+  }
+}
 var LLM_MODULE = "@deepseek-ai/dsh-llm";
 var factory;
 async function resolveFactory() {
@@ -4320,7 +4356,15 @@ var plugin_default = {
       const pet = new PetHub({
         welcome: () => {
           const facts = agents.facts();
-          if (!facts) return null;
+          if (!facts) {
+            debug("welcome-null", {
+              liveCount: agents.liveSize,
+              ownerSession: agents.ownerSession,
+              isPinned: agents.isPinned
+            });
+            return null;
+          }
+          debug("welcome-ok", facts);
           return facts;
         },
         say: async (text, from) => {
@@ -4329,7 +4373,15 @@ var plugin_default = {
           if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
           if (!agents.forwarding) return "auto-forward disabled \u2014 Coo must call the tool to deliver words";
           const agent = agents.owner;
-          if (!agent) return "no conversation is open on the DSH side";
+          if (!agent) {
+            debug("say-refused-no-owner", {
+              liveCount: agents.liveSize,
+              ownerSession: agents.ownerSession,
+              isPinned: agents.isPinned,
+              forwarding: agents.forwarding
+            });
+            return "no conversation is open on the DSH side";
+          }
           if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
           try {
             await resolveFactory();
@@ -4499,6 +4551,7 @@ var plugin_default = {
         }
       });
       log("info", `bridge listening on ${PET_PATH}`);
+      debug("apply-done", { petPath: PET_PATH, hasWebServer: true });
     });
     root.effect(() => () => {
       pending.length = 0;
@@ -4506,13 +4559,28 @@ var plugin_default = {
     root.on("agent/created", ((payload) => {
       const agent = payload?.agent;
       const id = agent?.session?.id;
-      if (!agent || !id) return;
+      if (!agent || !id) {
+        debug("agent-created-skipped", {
+          hasAgent: Boolean(agent),
+          sessionId: agent?.session?.id ?? null,
+          sessionKeys: agent ? Object.keys(agent) : null,
+          rawPayload: safeStringify(payload)
+        });
+        return;
+      }
+      debug("agent-created", {
+        id: String(id),
+        isSubagent: agent.session?.header?.parentSession || agent.session?.header?.origin === "subagent",
+        hasFollowup: typeof agent.followup === "function",
+        hasInject: typeof agent.inject === "function"
+      });
       agents.add(String(id), agent);
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);
     }));
     root.on("session/disposed", ((session) => {
       const id = session?.id;
+      debug("session-disposed", { id: String(id ?? ""), wasOwner: Boolean(id && agents.ownerSession === id) });
       const wasOwner = id && agents.ownerSession === id;
       if (id) agents.remove(String(id));
       if (wasOwner && hub && hub.connected) {
@@ -4530,10 +4598,13 @@ var plugin_default = {
         if (typeof model === "string" && model) agents.rememberModel(id, model);
         return;
       }
+      debug("session-event", { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
       if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
         const agent = agents.liveGet(id);
+        debug("auto-follow-check", { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {
           if (agents.forceOwner(id)) {
+            debug("auto-follow-moved", { newOwner: id });
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);
           }

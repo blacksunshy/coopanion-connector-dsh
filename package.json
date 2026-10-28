@@ -1,6 +1,6 @@
 {
   "name": "coopanion-connector-dsh",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "description": "Bridge between the Coopanion desktop pet and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it",
   "author": "Pal AI Lab",

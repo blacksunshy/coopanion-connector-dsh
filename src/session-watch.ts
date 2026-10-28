@@ -111,6 +111,11 @@ export class AgentRegistry {
     return this.ownerId;
   }
 
+  /** How many sessions are currently in the live map — useful for debug logging. */
+  get liveSize(): number {
+    return this.live.size;
+  }
+
   /** The agent currently tracked by id, or undefined when never seen or already disposed. */
   liveGet(id: string): LiveAgent | undefined {
     return this.live.get(id);
