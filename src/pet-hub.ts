@@ -32,6 +32,10 @@ export interface PetHubOptions {
   say(text: string, from: string): Promise<string | null>;
   /** The pet asked to switch the owning session; return null to accept, or the refusal reason. */
   pick?(session: string): string | null;
+  /** The pet asked for every live session, to render an explicit picker. */
+  listSessions?(): { sessions: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }>; pinned: boolean };
+  /** The pet asked to drop the pin so auto-follow takes over again; return null when accepted. */
+  unpin?(): string | null;
   log(level: 'info' | 'warn', text: string): void;
   /** The upgrade handler of another server, when the caller owns one (tests, embedding). */
   server?: WebSocketServer;
@@ -146,6 +150,17 @@ export class PetHub {
           });
           return;
         }
+        case 'list-sessions': {
+          const list = this.opts.listSessions?.();
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(
+              list
+                ? { t: 'session-list', sessions: list.sessions, pinned: list.pinned } satisfies HostFrame
+                : { t: 'error', text: 'this Host does not support listing sessions' } satisfies HostFrame,
+            ));
+          }
+          return;
+        }
         case 'ping':
           return;
         case 'pick': {
@@ -155,6 +170,14 @@ export class PetHub {
           const reason = pick === undefined ? 'this Host does not support session switching' : pick(frame.session);
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reason === null ? { t: 'picked', session: frame.session } : { t: 'refused', reason }));
+          }
+          return;
+        }
+        case 'unpin': {
+          const unpin = this.opts.unpin;
+          const reason = unpin === undefined ? 'this Host does not support unpinning' : unpin();
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(reason === null ? { t: 'unpinned' } : { t: 'refused', reason }));
           }
           return;
         }

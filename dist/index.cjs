@@ -3734,7 +3734,7 @@ module.exports = __toCommonJS(index_exports);
 
 // src/plugin.ts
 var import_node_crypto = require("node:crypto");
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 
 // node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -3770,6 +3770,10 @@ function parsePetFrame(raw) {
     case "pick":
       if (typeof frame.session !== "string" || !frame.session) return null;
       return { t: "pick", session: frame.session.slice(0, 128) };
+    case "list-sessions":
+      return { t: "list-sessions" };
+    case "unpin":
+      return { t: "unpin" };
     default:
       return null;
   }
@@ -3922,6 +3926,15 @@ var PetHub = class {
           });
           return;
         }
+        case "list-sessions": {
+          const list = this.opts.listSessions?.();
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(
+              list ? { t: "session-list", sessions: list.sessions, pinned: list.pinned } : { t: "error", text: "this Host does not support listing sessions" }
+            ));
+          }
+          return;
+        }
         case "ping":
           return;
         case "pick": {
@@ -3929,6 +3942,14 @@ var PetHub = class {
           const reason2 = pick === void 0 ? "this Host does not support session switching" : pick(frame.session);
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reason2 === null ? { t: "picked", session: frame.session } : { t: "refused", reason: reason2 }));
+          }
+          return;
+        }
+        case "unpin": {
+          const unpin = this.opts.unpin;
+          const reason2 = unpin === void 0 ? "this Host does not support unpinning" : unpin();
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(reason2 === null ? { t: "unpinned" } : { t: "refused", reason: reason2 }));
           }
           return;
         }
@@ -3958,13 +3979,15 @@ var AgentRegistry = class {
   pinned = false;
   /**
    * Whether pet words are auto-forwarded into DSH sessions.
-   * Default **false** — the user must opt in. Rationale: the pet is a second mouth,
-   * not a silent input channel. When forwarding is on, every pet `say` becomes a `user/message`
-   * on the owning agent with no way for the model to tell it apart from a real person. Default
-   * off avoids the "both sides answer at once" confusion described in Coopanion's honest
-   * epistemology note: infrastructure should only state facts it can confirm.
+   *
+   * Default **true** — 0.2.10 改回默认开，因为默认关等于"升级后主路径功能消失"
+   * （用户升级后桥明明连着，打字却不自动转 DSH，必须手动开配置才恢复）。
+   *
+   * 用户关掉的开关会被持久化到 profile 下 `coopanion-forward.json`，
+   * 下次启动由 Host 在 `apply()` 里用 `toggleForward(persisted)` 覆盖这个默认值。
+   * 所以这个 `true` 只管"从没设置过"的情况；一旦用户显式切过，持久化生效。
    */
-  forward = false;
+  forward = true;
   /** Forward pet's words into DSH sessions (opt-in). */
   get forwarding() {
     return this.forward;
@@ -4071,6 +4094,26 @@ var AgentRegistry = class {
       model: this.modelOf(String(session.id ?? ""))
     };
   }
+  /**
+   * All live sessions, for the pet's explicit session picker. DSH emits no event when a person
+   * merely switches tabs, so auto-follow cannot see silent navigation — the picker lets the pet
+   * switch the owner deliberately instead of waiting for a signal DSH never sends.
+   */
+  listSessions() {
+    const out = [];
+    for (const [id, agent] of this.live) {
+      const sub = this.isSubagent(agent);
+      out.push({
+        id,
+        cwd: String(agent.session.header?.cwd ?? ""),
+        model: this.modelOf(id),
+        owner: id === this.ownerId && !sub,
+        pinned: this.pinned && id === this.ownerId,
+        subagent: sub
+      });
+    }
+    return out;
+  }
   /** Is this agent a subagent, so it should never be the owner? */
   isSubagent(agent) {
     const header = agent.session.header;
@@ -4116,35 +4159,60 @@ function reason(value) {
   return typeof kind === "string" ? kind : "completed";
 }
 
+// src/forward-state.ts
+var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+var FILE = "coopanion-forward.json";
+function forwardStatePath() {
+  return (0, import_node_path.join)(process.env.DSH_PROFILE_DIR ?? process.cwd(), FILE);
+}
+function readForwardState() {
+  try {
+    const parsed = JSON.parse((0, import_node_fs.readFileSync)(forwardStatePath(), "utf8"));
+    return typeof parsed.forward === "boolean" ? parsed.forward : null;
+  } catch {
+    return null;
+  }
+}
+function writeForwardState(forward) {
+  try {
+    const path = forwardStatePath();
+    (0, import_node_fs.mkdirSync)((0, import_node_path.dirname)(path), { recursive: true });
+    (0, import_node_fs.writeFileSync)(path, `${JSON.stringify({ forward }, null, 2)}
+`, "utf8");
+  } catch {
+  }
+}
+
 // src/update.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_os = require("node:os");
-var import_node_path = require("node:path");
+var import_node_path2 = require("node:path");
 var REPO_OWNER = "blacksunshy";
 var REPO_NAME = "coopanion-connector-dsh";
 var GITHUB_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 function pkgDir() {
   const file = typeof __filename === "string" ? __filename : "";
-  if (file) return (0, import_node_path.resolve)((0, import_node_path.dirname)(file), "..");
+  if (file) return (0, import_node_path2.resolve)((0, import_node_path2.dirname)(file), "..");
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
-    const candidate = (0, import_node_path.join)(dir, "package.json");
+    const candidate = (0, import_node_path2.join)(dir, "package.json");
     try {
-      const pkg = JSON.parse((0, import_node_fs.readFileSync)(candidate, "utf8"));
+      const pkg = JSON.parse((0, import_node_fs2.readFileSync)(candidate, "utf8"));
       if (pkg.name === REPO_NAME) return dir;
     } catch {
     }
-    const parent = (0, import_node_path.dirname)(dir);
+    const parent = (0, import_node_path2.dirname)(dir);
     if (parent === dir) break;
     dir = parent;
   }
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.8") return "0.2.8";
+  if ("0.2.11") return "0.2.11";
   try {
-    const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
+    const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
   } catch {
     return "0.0.0-dev";
@@ -4193,42 +4261,42 @@ async function performUpdate() {
   const target = pkgDir();
   const tag = `v${check.latest}`;
   const tarballUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/tags/${tag}.tar.gz`;
-  const workDir = (0, import_node_path.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-${Date.now()}`);
-  (0, import_node_fs.mkdirSync)(workDir, { recursive: true });
-  const tarPath = (0, import_node_path.join)(workDir, "src.tar.gz");
-  const extractDir = (0, import_node_path.join)(workDir, "extract");
+  const workDir = (0, import_node_path2.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-${Date.now()}`);
+  (0, import_node_fs2.mkdirSync)(workDir, { recursive: true });
+  const tarPath = (0, import_node_path2.join)(workDir, "src.tar.gz");
+  const extractDir = (0, import_node_path2.join)(workDir, "extract");
   try {
     const res = await fetch(tarballUrl, { signal: AbortSignal.timeout(3e4) });
     if (!res.ok || !res.body) {
       return { ok: false, from: cur, to: check.latest, error: `download failed: HTTP ${res.status}`, needsRestart: false };
     }
-    (0, import_node_fs.writeFileSync)(tarPath, Buffer.from(await res.arrayBuffer()));
-    (0, import_node_fs.mkdirSync)(extractDir, { recursive: true });
+    (0, import_node_fs2.writeFileSync)(tarPath, Buffer.from(await res.arrayBuffer()));
+    (0, import_node_fs2.mkdirSync)(extractDir, { recursive: true });
     (0, import_node_child_process.execFileSync)("tar", ["-xzf", tarPath, "-C", extractDir], { stdio: "pipe" });
-    const entries = (0, import_node_fs.readdirSync)(extractDir);
-    const srcDir = (0, import_node_path.join)(extractDir, entries[0] ?? "");
-    if (!(0, import_node_fs.existsSync)((0, import_node_path.join)(srcDir, "package.json"))) {
+    const entries = (0, import_node_fs2.readdirSync)(extractDir);
+    const srcDir = (0, import_node_path2.join)(extractDir, entries[0] ?? "");
+    if (!(0, import_node_fs2.existsSync)((0, import_node_path2.join)(srcDir, "package.json"))) {
       return { ok: false, from: cur, to: check.latest, error: "tarball did not contain package.json", needsRestart: false };
     }
-    const backupDir = (0, import_node_path.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-backup-${Date.now()}`);
-    (0, import_node_fs.mkdirSync)(backupDir, { recursive: true });
-    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(target, "dist"))) {
-      (0, import_node_fs.cpSync)((0, import_node_path.join)(target, "dist"), (0, import_node_path.join)(backupDir, "dist"), { recursive: true });
+    const backupDir = (0, import_node_path2.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-backup-${Date.now()}`);
+    (0, import_node_fs2.mkdirSync)(backupDir, { recursive: true });
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(target, "dist"))) {
+      (0, import_node_fs2.cpSync)((0, import_node_path2.join)(target, "dist"), (0, import_node_path2.join)(backupDir, "dist"), { recursive: true });
     }
-    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(target, "package.json"))) {
-      (0, import_node_fs.writeFileSync)((0, import_node_path.join)(backupDir, "package.json.bak"), (0, import_node_fs.readFileSync)((0, import_node_path.join)(target, "package.json")));
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(target, "package.json"))) {
+      (0, import_node_fs2.writeFileSync)((0, import_node_path2.join)(backupDir, "package.json.bak"), (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(target, "package.json")));
     }
-    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(srcDir, "dist"))) {
-      (0, import_node_fs.rmSync)((0, import_node_path.join)(target, "dist"), { recursive: true, force: true });
-      (0, import_node_fs.cpSync)((0, import_node_path.join)(srcDir, "dist"), (0, import_node_path.join)(target, "dist"), { recursive: true });
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(srcDir, "dist"))) {
+      (0, import_node_fs2.rmSync)((0, import_node_path2.join)(target, "dist"), { recursive: true, force: true });
+      (0, import_node_fs2.cpSync)((0, import_node_path2.join)(srcDir, "dist"), (0, import_node_path2.join)(target, "dist"), { recursive: true });
     }
     for (const f of ["package.json", "cordis.patch.yml", "README.md"]) {
-      const src = (0, import_node_path.join)(srcDir, f);
-      const dst = (0, import_node_path.join)(target, f);
-      if ((0, import_node_fs.existsSync)(src)) {
-        let content = (0, import_node_fs.readFileSync)(src, "utf8");
+      const src = (0, import_node_path2.join)(srcDir, f);
+      const dst = (0, import_node_path2.join)(target, f);
+      if ((0, import_node_fs2.existsSync)(src)) {
+        let content = (0, import_node_fs2.readFileSync)(src, "utf8");
         if (content.charCodeAt(0) === 65279) content = content.slice(1);
-        (0, import_node_fs.writeFileSync)(dst, content);
+        (0, import_node_fs2.writeFileSync)(dst, content);
       }
     }
     return {
@@ -4242,7 +4310,7 @@ async function performUpdate() {
     return { ok: false, from: cur, to: check.latest, error: err.message, needsRestart: false };
   } finally {
     try {
-      (0, import_node_fs.rmSync)(workDir, { recursive: true, force: true });
+      (0, import_node_fs2.rmSync)(workDir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -4268,7 +4336,7 @@ function proveLoad() {
     `${process.env.USERPROFILE ?? ""}\\.dsh\\logs\\coopanion-bridge.jsonl`
   ]) {
     try {
-      (0, import_node_fs2.appendFileSync)(file, line);
+      (0, import_node_fs3.appendFileSync)(file, line);
     } catch {
     }
   }
@@ -4284,7 +4352,7 @@ function debug(tag, detail) {
       `${process.env.USERPROFILE ?? ""}\\.dsh\\logs\\coopanion-bridge.jsonl`
     ]) {
       try {
-        (0, import_node_fs2.appendFileSync)(file, line);
+        (0, import_node_fs3.appendFileSync)(file, line);
       } catch {
       }
     }
@@ -4340,6 +4408,10 @@ var plugin_default = {
   apply(root) {
     proveLoad();
     const agents = new AgentRegistry();
+    {
+      const persisted = readForwardState();
+      if (persisted !== null) agents.toggleForward(persisted);
+    }
     let hub = null;
     const pending = [];
     let userTemplate = null;
@@ -4372,7 +4444,7 @@ var plugin_default = {
           const body = text.trim();
           if (!body) return "empty message";
           if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
-          if (!agents.forwarding) return "auto-forward disabled \u2014 Coo must call the tool to deliver words";
+          if (!agents.forwarding) return "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel";
           const agent = agents.owner;
           if (!agent) {
             debug("say-refused-no-owner", {
@@ -4395,6 +4467,11 @@ var plugin_default = {
           }
         },
         pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
+        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+        unpin: () => {
+          agents.clearPin();
+          return null;
+        },
         log
       });
       hub = pet;
@@ -4490,9 +4567,69 @@ var plugin_default = {
             } catch {
             }
             const next = agents.toggleForward(target);
+            writeForwardState(next);
             hub?.send({ t: "notice", kind: "forward-toggle", text: next ? "\u81EA\u52A8\u9012\u9001\u5DF2\u5F00\u542F" : "\u81EA\u52A8\u9012\u9001\u5DF2\u5173\u95ED" });
             res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
             res.end(JSON.stringify({ ok: true, forwarding: next }));
+          });
+        }
+      });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/sessions",
+        handler: (_req, res) => {
+          res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          res.end(JSON.stringify({
+            ok: true,
+            sessions: agents.listSessions(),
+            pinned: agents.isPinned
+          }));
+        }
+      });
+      scoped.webServer.register({
+        kind: "exact",
+        path: "/coopanion/owner",
+        handler: (req, res) => {
+          if (req.method !== "POST") {
+            res.writeHead(405, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "use POST" }));
+            return;
+          }
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk.toString();
+          });
+          req.on("end", () => {
+            let id;
+            let pin = true;
+            try {
+              const parsed = JSON.parse(body);
+              id = parsed.id;
+              if (typeof parsed.pin === "boolean") pin = parsed.pin;
+            } catch {
+            }
+            if (typeof id !== "string" || !id) {
+              res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+              res.end(JSON.stringify({ ok: false, error: 'body must be {"id":"<session-id>","pin":true|false}' }));
+              return;
+            }
+            const moved = pin ? agents.setOwner(id) : agents.forceOwner(id);
+            if (!moved) {
+              res.writeHead(409, { "content-type": "application/json; charset=utf-8" });
+              res.end(JSON.stringify({
+                ok: false,
+                error: "session is not live, is a subagent, or is already the owner",
+                id,
+                pinned: agents.isPinned,
+                owner: agents.ownerSession
+              }));
+              return;
+            }
+            const facts = agents.facts();
+            if (facts && hub && hub.connected) hub.notifyBound(facts);
+            debug("owner-switched", { id, pin, owner: agents.ownerSession });
+            res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+            res.end(JSON.stringify({ ok: true, session: facts?.session ?? id, pinned: agents.isPinned }));
           });
         }
       });

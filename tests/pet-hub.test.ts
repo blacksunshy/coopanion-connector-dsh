@@ -214,3 +214,23 @@ describe('a pet that switches conversation', () => {
     expect(await frame).toEqual({ t: 'refused', reason: 'this Host does not support session switching' });
   });
 });
+
+describe('a pet that unpins', () => {
+  it('hears that the pin is gone', async () => {
+    const unpin = vi.fn(() => null);
+    const { url } = await listening({ unpin });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'unpin' }));
+    expect(await frame).toEqual({ t: 'unpinned' });
+    expect(unpin).toHaveBeenCalledTimes(1);
+  });
+
+  it('is refused when this Host cannot unpin at all', async () => {
+    const { url } = await listening();        // 不传 unpin
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'unpin' }));
+    expect(await frame).toEqual({ t: 'refused', reason: 'this Host does not support unpinning' });
+  });
+});

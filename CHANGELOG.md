@@ -1,5 +1,31 @@
 # 更新说明
 
+## 0.2.11 — 已发布（GitHub Release）
+
+### 会话列表与「解除固定」真正生效（配合桌宠 0.6.11）
+
+DSH 只在真的有活动（`agent/created`、`session/event`）时才告诉插件，**只切 tab 不说话时一条事件都没有**。所以"自动跟随当前会话"猜不出来，必须让桌宠能主动问、主动选：
+
+- 新增 `list-sessions` 帧（回 `session-list`）：给出全部 live 会话的 `id / cwd / model / owner / pinned / subagent`，桌宠据此渲染会话选择器
+- 新增 `unpin` 帧（回 `unpinned`）：调用 `AgentRegistry.clearPin()`，把 owner 交还给 auto-follow。此前桌宠的「解除固定」只清自己那份状态，Host 的 pin 还在，于是 DSH 仍把消息送进"已经放开"的会话
+- 新增 `GET /coopanion/sessions` 与 `POST /coopanion/owner`（body `{id, pin?}`），便于调试和外部调用
+- 协议版本仍为 1：只增加帧类型，旧版桌宠会忽略不认识的帧
+
+### 清理
+
+- 删除 0.2.9 排查"桌宠连上但收不到话"时加的临时调试写盘（`[coopanion-debug]` 行不再写入 `coopanion-bridge.jsonl`）。插件加载探针保留，用于确认当前进程加载的是哪份构建
+
+### 与桌宠侧的配对
+
+桌宠侧请用 `cortico-world-fatfish` **≥ 0.6.11**。低于 0.6.11 的桌宠没有会话选择器，而且会把 `session-list` 帧当成未知帧丢掉 → 面板显示"DSH 没有打开的会话"。
+
+## 0.2.10 — 已发布（GitHub Release）
+
+**补记**（发版时漏写这一段）：
+
+- 自动转发（auto-forward）恢复默认开；用户手动关掉的开关写入 `coopanion-forward.json`，插件重启不丢。修复升级后"桥明明连着、桌宠的话却递不进 DSH"
+- 与桌宠 0.6.9 / 0.6.10 配对
+
 ## 0.2.9 — 已发布（GitHub Release）
 
 ### ⚠️ 安全修复（issue #6）—— **CSWSH 跨站 WebSocket 劫持**

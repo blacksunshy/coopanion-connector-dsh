@@ -35,7 +35,15 @@ export type HostFrame =
    * `text` is always safe to render; `url` is optional action destination.
    * Frames of unknown `kind` should be silently dropped — Host may add more.
    */
-  | { t: 'notice'; kind: string; text: string; url?: string };
+  | { t: 'notice'; kind: string; text: string; url?: string }
+  /** Answer to `list-sessions`: every live session with its owner/pin state. */
+  | {
+      t: 'session-list';
+      sessions: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }>;
+      pinned: boolean;
+    }
+  /** Answer to `unpin`: the pin is gone, auto-follow may move the owner again. */
+  | { t: 'unpinned' };
 
 /** Pet→Host frames. */
 export type PetFrame =
@@ -49,6 +57,11 @@ export type PetFrame =
    * Host refuses a session that is not live with a `refused` frame.
    */
   | { t: 'pick'; session: string }
+  /** Ask for every live session, so the pet can offer an explicit picker (DSH emits no event on
+   *  silent tab switches, so auto-follow alone cannot see them). */
+  | { t: 'list-sessions' }
+  /** Drop the pin so the Host's own auto-follow picks the owner again. */
+  | { t: 'unpin' }
   | { t: 'ping' };
 
 /** Host→pet answers to a `say`. */
@@ -78,6 +91,10 @@ export function parsePetFrame(raw: string): PetFrame | null {
     case 'pick':
       if (typeof frame.session !== 'string' || !frame.session) return null;
       return { t: 'pick', session: frame.session.slice(0, 128) };
+    case 'list-sessions':
+      return { t: 'list-sessions' };
+    case 'unpin':
+      return { t: 'unpin' };
     default:
       return null;
   }

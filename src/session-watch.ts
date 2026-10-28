@@ -182,6 +182,27 @@ export class AgentRegistry {
     };
   }
 
+  /**
+   * All live sessions, for the pet's explicit session picker. DSH emits no event when a person
+   * merely switches tabs, so auto-follow cannot see silent navigation — the picker lets the pet
+   * switch the owner deliberately instead of waiting for a signal DSH never sends.
+   */
+  listSessions(): Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }> {
+    const out: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }> = [];
+    for (const [id, agent] of this.live) {
+      const sub = this.isSubagent(agent);
+      out.push({
+        id,
+        cwd: String(agent.session.header?.cwd ?? ''),
+        model: this.modelOf(id),
+        owner: id === this.ownerId && !sub,
+        pinned: this.pinned && id === this.ownerId,
+        subagent: sub,
+      });
+    }
+    return out;
+  }
+
   /** Is this agent a subagent, so it should never be the owner? */
   isSubagent(agent: LiveAgent): boolean {
     const header = agent.session.header;

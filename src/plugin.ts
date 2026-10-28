@@ -7,6 +7,10 @@
  * agent through `followup`). It is not an input channel for anyone else: the socket binds to the
  * Host's own loopback web server and refuses a connection whose Host header is not loopback.
  *
+ * DSH says nothing when a person merely switches tabs, so the owner pointer can only move on real
+ * activity. The pet therefore asks for the live sessions (`list-sessions`) and names one itself
+ * (`pick`), and it can hand the pointer back (`unpin`).
+ *
  * Loaded from `cordis.patch.yml` as one row; see README.md for install and protocol.
  */
 import type { IncomingMessage } from 'node:http';
@@ -270,6 +274,11 @@ export default {
           }
         },
         pick: (session) => (agents.setOwner(String(session)) ? null : 'no such open conversation'),
+        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+        unpin: () => {
+          agents.clearPin();
+          return null;
+        },
         log,
       });
       hub = pet;
@@ -382,6 +391,74 @@ export default {
             hub?.send({ t: 'notice', kind: 'forward-toggle', text: next ? '自动递送已开启' : '自动递送已关闭' });
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
             res.end(JSON.stringify({ ok: true, forwarding: next }));
+          });
+        },
+      });
+      /**
+       * List every live session so the pet can offer an explicit picker. DSH stays silent when a
+       * person merely switches tabs (no session/event, no agent/created for already-open ones),
+       * so passive auto-follow cannot see silent navigation — the picker replaces mind-reading.
+       */
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/sessions',
+        handler: (_req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({
+            ok: true,
+            sessions: agents.listSessions(),
+            pinned: agents.isPinned,
+          }));
+        },
+      });
+      /**
+       * Explicitly move the owner to a session. Body `{id, pin?}`: pin defaults to true — an
+       * explicit human choice outranks auto-follow until they pick another one (or unpin via
+       * `{id, pin:false}`, which moves without pinning). Refuses sessions that are not live or
+       * are subagents; the pet shows the refusal instead of guessing.
+       */
+      scoped.webServer!.register({
+        kind: 'exact',
+        path: '/coopanion/owner',
+        handler: (req, res) => {
+          if (req.method !== 'POST') {
+            res.writeHead(405, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'use POST' }));
+            return;
+          }
+          let body = '';
+          req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          req.on('end', () => {
+            let id: unknown;
+            let pin = true;
+            try {
+              const parsed = JSON.parse(body) as { id?: unknown; pin?: unknown };
+              id = parsed.id;
+              if (typeof parsed.pin === 'boolean') pin = parsed.pin;
+            } catch { /* malformed → id stays undefined */ }
+            if (typeof id !== 'string' || !id) {
+              res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ ok: false, error: 'body must be {"id":"<session-id>","pin":true|false}' }));
+              return;
+            }
+            const moved = pin ? agents.setOwner(id) : agents.forceOwner(id);
+            if (!moved) {
+              res.writeHead(409, { 'content-type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({
+                ok: false,
+                error: 'session is not live, is a subagent, or is already the owner',
+                id,
+                pinned: agents.isPinned,
+                owner: agents.ownerSession,
+              }));
+              return;
+            }
+            const facts = agents.facts();
+            // 告诉桌宠 owner 变了，它的面板立刻跟上
+            if (facts && hub && hub.connected) hub.notifyBound(facts);
+            debug('owner-switched', { id, pin, owner: agents.ownerSession });
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(JSON.stringify({ ok: true, session: facts?.session ?? id, pinned: agents.isPinned }));
           });
         },
       });
