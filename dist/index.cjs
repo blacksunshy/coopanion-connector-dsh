@@ -3734,7 +3734,7 @@ module.exports = __toCommonJS(index_exports);
 
 // src/plugin.ts
 var import_node_crypto = require("node:crypto");
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 
 // node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
@@ -3770,15 +3770,38 @@ function parsePetFrame(raw) {
     case "pick":
       if (typeof frame.session !== "string" || !frame.session) return null;
       return { t: "pick", session: frame.session.slice(0, 128) };
+    case "new":
+      if (typeof frame.id !== "string" || !frame.id) return null;
+      return { t: "new", id: frame.id.slice(0, 64) };
     default:
       return null;
   }
 }
 var SAY_MAX = 4e3;
 var REPLY_MAX = 2e3;
-var BRIDGE_PREFIX = /^[\p{L}\p{N}_\- ]{1,64}（通过桌宠）说：/u;
-function carriesBridgePrefix(text) {
-  return BRIDGE_PREFIX.test(text.trim());
+var HOST_NAME_ENV = "COOPANION_HOST_NAME";
+var PLATFORM_NAMES = { win32: "\u58A8\u58A8", darwin: "\u9EA6\u9EA6" };
+function speakerName(from, platform = process.platform, env = process.env) {
+  const configured = env[HOST_NAME_ENV]?.trim();
+  if (configured) return configured.slice(0, 64);
+  const named = PLATFORM_NAMES[platform];
+  if (named) return named;
+  return (from ?? "").trim().slice(0, 64) || "\u684C\u5BA0";
+}
+function bridgeLine(text, name) {
+  return `${name}\u8BF4\uFF1A${text}`;
+}
+var LEGACY_BRIDGE_PREFIX = /^[\p{L}\p{N}_\- ]{1,64}（通过桌宠）说：/u;
+function bridgeSignatures(env = process.env) {
+  const names = new Set(Object.values(PLATFORM_NAMES));
+  const configured = env[HOST_NAME_ENV]?.trim();
+  if (configured) names.add(configured);
+  return [...names];
+}
+function carriesBridgePrefix(text, env = process.env) {
+  const line = text.trim();
+  if (LEGACY_BRIDGE_PREFIX.test(line)) return true;
+  return bridgeSignatures(env).some((name) => line.startsWith(`${name}\u8BF4\uFF1A`));
 }
 function assistantText(message) {
   if (typeof message !== "object" || message === null) return null;
@@ -3924,6 +3947,15 @@ var PetHub = class {
         }
         case "ping":
           return;
+        case "new": {
+          const create = this.opts.createSession;
+          const settled = create === void 0 ? Promise.resolve({ reason: "this Host cannot create a conversation" }) : create().catch((err) => ({ reason: `DSH failed to create a conversation: ${err.message}` }));
+          void settled.then((outcome) => {
+            if (ws.readyState !== ws.OPEN) return;
+            ws.send(JSON.stringify("session" in outcome ? { t: "created", id: frame.id, session: outcome.session } : { t: "refused", id: frame.id, reason: outcome.reason }));
+          });
+          return;
+        }
         case "pick": {
           const pick = this.opts.pick;
           const reason2 = pick === void 0 ? "this Host does not support session switching" : pick(frame.session);
@@ -3957,14 +3989,22 @@ var AgentRegistry = class {
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   pinned = false;
   /**
-   * Whether pet words are auto-forwarded into DSH sessions.
-   * Default **false** — the user must opt in. Rationale: the pet is a second mouth,
-   * not a silent input channel. When forwarding is on, every pet `say` becomes a `user/message`
-   * on the owning agent with no way for the model to tell it apart from a real person. Default
-   * off avoids the "both sides answer at once" confusion described in Coopanion's honest
-   * epistemology note: infrastructure should only state facts it can confirm.
+   * Whether DSH has archived a session. An archived Session stays live but refuses every model
+   * step, so words submitted there end as `blocked` instead of being answered: the bridge must not
+   * offer one to the pet as somewhere to speak.
    */
-  forward = false;
+  archived = () => false;
+  /**
+   * Whether pet words are auto-forwarded into DSH sessions.
+   *
+   * Default **true** — 0.2.10 改回默认开，因为默认关等于"升级后主路径功能消失"
+   * （用户升级后桥明明连着，打字却不自动转 DSH，必须手动开配置才恢复）。
+   *
+   * 用户关掉的开关会被持久化到 profile 下 `coopanion-forward.json`，
+   * 下次启动由 Host 在 `apply()` 里用 `toggleForward(persisted)` 覆盖这个默认值。
+   * 所以这个 `true` 只管"从没设置过"的情况；一旦用户显式切过，持久化生效。
+   */
+  forward = true;
   /** Forward pet's words into DSH sessions (opt-in). */
   get forwarding() {
     return this.forward;
@@ -3978,6 +4018,10 @@ var AgentRegistry = class {
   get isPinned() {
     return this.pinned;
   }
+  /** The archive set as DSH owns it; read at each decision, since archiving happens while we run. */
+  setArchivedCheck(check) {
+    this.archived = check;
+  }
   /**
    * A new agent appeared. Subagents join the live map but do not steal the owner from an
    * unpinned non-subagent. An unpinned registry still points at the newest non-subagent; a
@@ -3986,7 +4030,7 @@ var AgentRegistry = class {
   add(id, agent) {
     this.live.set(id, agent);
     if (this.isSubagent(agent)) return;
-    if (!this.pinned) this.ownerId = id;
+    if (!this.pinned && !this.archived(id)) this.ownerId = id;
   }
   remove(id) {
     this.live.delete(id);
@@ -4002,12 +4046,18 @@ var AgentRegistry = class {
     }
   }
   get owner() {
-    if (this.ownerId === null) return null;
-    const a = this.live.get(this.ownerId);
-    return a && !this.isSubagent(a) ? a : null;
+    if (this.ownerId !== null) {
+      const current = this.live.get(this.ownerId);
+      if (current && !this.isSubagent(current) && !this.archived(this.ownerId)) return current;
+    }
+    for (const [id, agent] of [...this.live.entries()].reverse()) {
+      if (!this.isSubagent(agent) && !this.archived(id)) return agent;
+    }
+    return null;
   }
   get ownerSession() {
-    return this.ownerId;
+    const agent = this.owner;
+    return agent === null ? null : String(agent.session.id ?? "") || this.ownerId;
   }
   /** How many sessions are currently in the live map — useful for debug logging. */
   get liveSize() {
@@ -4027,6 +4077,7 @@ var AgentRegistry = class {
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
+    if (this.archived(id)) return false;
     this.ownerId = id;
     this.pinned = true;
     return true;
@@ -4047,6 +4098,7 @@ var AgentRegistry = class {
     const agent = this.live.get(id);
     if (!agent) return false;
     if (this.isSubagent(agent)) return false;
+    if (this.archived(id)) return false;
     this.pinned = false;
     this.ownerId = id;
     return true;
@@ -4116,35 +4168,105 @@ function reason(value) {
   return typeof kind === "string" ? kind : "completed";
 }
 
+// src/forward-state.ts
+var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+var FILE = "coopanion-forward.json";
+function forwardStatePath() {
+  return (0, import_node_path.join)(process.env.DSH_PROFILE_DIR ?? process.cwd(), FILE);
+}
+function readForwardState() {
+  try {
+    const parsed = JSON.parse((0, import_node_fs.readFileSync)(forwardStatePath(), "utf8"));
+    return typeof parsed.forward === "boolean" ? parsed.forward : null;
+  } catch {
+    return null;
+  }
+}
+function writeForwardState(forward) {
+  try {
+    const path = forwardStatePath();
+    (0, import_node_fs.mkdirSync)((0, import_node_path.dirname)(path), { recursive: true });
+    (0, import_node_fs.writeFileSync)(path, `${JSON.stringify({ forward }, null, 2)}
+`, "utf8");
+  } catch {
+  }
+}
+
+// src/new-session.ts
+function pickTarget(workspaces, ownerSession, knownCwd) {
+  if (ownerSession !== null) {
+    const owning = workspaces.find((workspace) => workspace.sessionIds.includes(ownerSession));
+    if (owning) return { workspaceId: owning.id };
+  }
+  if (knownCwd) {
+    const matching = workspaces.find((workspace) => workspace.path === knownCwd);
+    if (matching) return { workspaceId: matching.id };
+  }
+  const first = workspaces[0];
+  if (first) return { workspaceId: first.id };
+  return knownCwd === null ? null : { cwd: knownCwd };
+}
+async function createConversation(controller, workspaces, ownerSession, knownCwd) {
+  const create = controller?.commands?.create;
+  if (create === void 0) {
+    return { reason: "this DSH build has no session controller, so the pet cannot create a conversation" };
+  }
+  const target = pickTarget(workspaces, ownerSession, knownCwd);
+  if (target === null) {
+    return { reason: "DSH has no workspace to create the conversation in" };
+  }
+  try {
+    const created = await create.call(controller.commands, target);
+    return { session: created.sessionId };
+  } catch (err) {
+    return { reason: `DSH refused to create a conversation: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+// src/bridge-log.ts
+var import_node_os = require("node:os");
+var import_node_path2 = require("node:path");
+var BRIDGE_LOG_FILE = "coopanion-bridge.jsonl";
+function bridgeLogFiles(env = process.env, platform = process.platform, home = (0, import_node_os.homedir)()) {
+  if (platform === "win32") {
+    const files = [];
+    if (env.APPDATA) files.push((0, import_node_path2.join)(env.APPDATA, "@deepseek-ai", "dsh-desktop", "logs", BRIDGE_LOG_FILE));
+    if (env.USERPROFILE) files.push((0, import_node_path2.join)(env.USERPROFILE, ".dsh", "logs", BRIDGE_LOG_FILE));
+    return files;
+  }
+  return [(0, import_node_path2.join)(home, ".dsh", "logs", BRIDGE_LOG_FILE)];
+}
+
 // src/update.ts
 var import_node_child_process = require("node:child_process");
-var import_node_fs = require("node:fs");
-var import_node_os = require("node:os");
-var import_node_path = require("node:path");
+var import_node_fs2 = require("node:fs");
+var import_node_os2 = require("node:os");
+var import_node_path3 = require("node:path");
 var REPO_OWNER = "blacksunshy";
 var REPO_NAME = "coopanion-connector-dsh";
 var GITHUB_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 function pkgDir() {
   const file = typeof __filename === "string" ? __filename : "";
-  if (file) return (0, import_node_path.resolve)((0, import_node_path.dirname)(file), "..");
+  if (file) return (0, import_node_path3.resolve)((0, import_node_path3.dirname)(file), "..");
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
-    const candidate = (0, import_node_path.join)(dir, "package.json");
+    const candidate = (0, import_node_path3.join)(dir, "package.json");
     try {
-      const pkg = JSON.parse((0, import_node_fs.readFileSync)(candidate, "utf8"));
+      const pkg = JSON.parse((0, import_node_fs2.readFileSync)(candidate, "utf8"));
       if (pkg.name === REPO_NAME) return dir;
     } catch {
     }
-    const parent = (0, import_node_path.dirname)(dir);
+    const parent = (0, import_node_path3.dirname)(dir);
     if (parent === dir) break;
     dir = parent;
   }
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.8") return "0.2.8";
+  if ("0.2.11") return "0.2.11";
   try {
-    const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
+    const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
   } catch {
     return "0.0.0-dev";
@@ -4193,42 +4315,42 @@ async function performUpdate() {
   const target = pkgDir();
   const tag = `v${check.latest}`;
   const tarballUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/tags/${tag}.tar.gz`;
-  const workDir = (0, import_node_path.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-${Date.now()}`);
-  (0, import_node_fs.mkdirSync)(workDir, { recursive: true });
-  const tarPath = (0, import_node_path.join)(workDir, "src.tar.gz");
-  const extractDir = (0, import_node_path.join)(workDir, "extract");
+  const workDir = (0, import_node_path3.join)((0, import_node_os2.tmpdir)(), `${REPO_NAME}-${Date.now()}`);
+  (0, import_node_fs2.mkdirSync)(workDir, { recursive: true });
+  const tarPath = (0, import_node_path3.join)(workDir, "src.tar.gz");
+  const extractDir = (0, import_node_path3.join)(workDir, "extract");
   try {
     const res = await fetch(tarballUrl, { signal: AbortSignal.timeout(3e4) });
     if (!res.ok || !res.body) {
       return { ok: false, from: cur, to: check.latest, error: `download failed: HTTP ${res.status}`, needsRestart: false };
     }
-    (0, import_node_fs.writeFileSync)(tarPath, Buffer.from(await res.arrayBuffer()));
-    (0, import_node_fs.mkdirSync)(extractDir, { recursive: true });
+    (0, import_node_fs2.writeFileSync)(tarPath, Buffer.from(await res.arrayBuffer()));
+    (0, import_node_fs2.mkdirSync)(extractDir, { recursive: true });
     (0, import_node_child_process.execFileSync)("tar", ["-xzf", tarPath, "-C", extractDir], { stdio: "pipe" });
-    const entries = (0, import_node_fs.readdirSync)(extractDir);
-    const srcDir = (0, import_node_path.join)(extractDir, entries[0] ?? "");
-    if (!(0, import_node_fs.existsSync)((0, import_node_path.join)(srcDir, "package.json"))) {
+    const entries = (0, import_node_fs2.readdirSync)(extractDir);
+    const srcDir = (0, import_node_path3.join)(extractDir, entries[0] ?? "");
+    if (!(0, import_node_fs2.existsSync)((0, import_node_path3.join)(srcDir, "package.json"))) {
       return { ok: false, from: cur, to: check.latest, error: "tarball did not contain package.json", needsRestart: false };
     }
-    const backupDir = (0, import_node_path.join)((0, import_node_os.tmpdir)(), `${REPO_NAME}-backup-${Date.now()}`);
-    (0, import_node_fs.mkdirSync)(backupDir, { recursive: true });
-    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(target, "dist"))) {
-      (0, import_node_fs.cpSync)((0, import_node_path.join)(target, "dist"), (0, import_node_path.join)(backupDir, "dist"), { recursive: true });
+    const backupDir = (0, import_node_path3.join)((0, import_node_os2.tmpdir)(), `${REPO_NAME}-backup-${Date.now()}`);
+    (0, import_node_fs2.mkdirSync)(backupDir, { recursive: true });
+    if ((0, import_node_fs2.existsSync)((0, import_node_path3.join)(target, "dist"))) {
+      (0, import_node_fs2.cpSync)((0, import_node_path3.join)(target, "dist"), (0, import_node_path3.join)(backupDir, "dist"), { recursive: true });
     }
-    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(target, "package.json"))) {
-      (0, import_node_fs.writeFileSync)((0, import_node_path.join)(backupDir, "package.json.bak"), (0, import_node_fs.readFileSync)((0, import_node_path.join)(target, "package.json")));
+    if ((0, import_node_fs2.existsSync)((0, import_node_path3.join)(target, "package.json"))) {
+      (0, import_node_fs2.writeFileSync)((0, import_node_path3.join)(backupDir, "package.json.bak"), (0, import_node_fs2.readFileSync)((0, import_node_path3.join)(target, "package.json")));
     }
-    if ((0, import_node_fs.existsSync)((0, import_node_path.join)(srcDir, "dist"))) {
-      (0, import_node_fs.rmSync)((0, import_node_path.join)(target, "dist"), { recursive: true, force: true });
-      (0, import_node_fs.cpSync)((0, import_node_path.join)(srcDir, "dist"), (0, import_node_path.join)(target, "dist"), { recursive: true });
+    if ((0, import_node_fs2.existsSync)((0, import_node_path3.join)(srcDir, "dist"))) {
+      (0, import_node_fs2.rmSync)((0, import_node_path3.join)(target, "dist"), { recursive: true, force: true });
+      (0, import_node_fs2.cpSync)((0, import_node_path3.join)(srcDir, "dist"), (0, import_node_path3.join)(target, "dist"), { recursive: true });
     }
     for (const f of ["package.json", "cordis.patch.yml", "README.md"]) {
-      const src = (0, import_node_path.join)(srcDir, f);
-      const dst = (0, import_node_path.join)(target, f);
-      if ((0, import_node_fs.existsSync)(src)) {
-        let content = (0, import_node_fs.readFileSync)(src, "utf8");
+      const src = (0, import_node_path3.join)(srcDir, f);
+      const dst = (0, import_node_path3.join)(target, f);
+      if ((0, import_node_fs2.existsSync)(src)) {
+        let content = (0, import_node_fs2.readFileSync)(src, "utf8");
         if (content.charCodeAt(0) === 65279) content = content.slice(1);
-        (0, import_node_fs.writeFileSync)(dst, content);
+        (0, import_node_fs2.writeFileSync)(dst, content);
       }
     }
     return {
@@ -4242,7 +4364,7 @@ async function performUpdate() {
     return { ok: false, from: cur, to: check.latest, error: err.message, needsRestart: false };
   } finally {
     try {
-      (0, import_node_fs.rmSync)(workDir, { recursive: true, force: true });
+      (0, import_node_fs2.rmSync)(workDir, { recursive: true, force: true });
     } catch {
     }
   }
@@ -4263,12 +4385,9 @@ function proveLoad() {
     cwd: process.cwd()
   })}
 `;
-  for (const file of [
-    `${process.env.APPDATA ?? ""}\\@deepseek-ai\\dsh-desktop\\logs\\coopanion-bridge.jsonl`,
-    `${process.env.USERPROFILE ?? ""}\\.dsh\\logs\\coopanion-bridge.jsonl`
-  ]) {
+  for (const file of bridgeLogFiles()) {
     try {
-      (0, import_node_fs2.appendFileSync)(file, line);
+      (0, import_node_fs3.appendFileSync)(file, line);
     } catch {
     }
   }
@@ -4279,12 +4398,9 @@ function debug(tag, detail) {
   try {
     const line = `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, tag, detail })}
 `;
-    for (const file of [
-      `${process.env.APPDATA ?? ""}\\@deepseek-ai\\dsh-desktop\\logs\\coopanion-bridge.jsonl`,
-      `${process.env.USERPROFILE ?? ""}\\.dsh\\logs\\coopanion-bridge.jsonl`
-    ]) {
+    for (const file of bridgeLogFiles()) {
       try {
-        (0, import_node_fs2.appendFileSync)(file, line);
+        (0, import_node_fs3.appendFileSync)(file, line);
       } catch {
       }
     }
@@ -4340,6 +4456,15 @@ var plugin_default = {
   apply(root) {
     proveLoad();
     const agents = new AgentRegistry();
+    agents.setArchivedCheck((id) => {
+      const registry = root.get("workspaceRegistry");
+      return registry?.archivedSessionIds?.includes(id) ?? false;
+    });
+    let knownCwd = null;
+    {
+      const persisted = readForwardState();
+      if (persisted !== null) agents.toggleForward(persisted);
+    }
     let hub = null;
     const pending = [];
     let userTemplate = null;
@@ -4365,6 +4490,7 @@ var plugin_default = {
             });
             return null;
           }
+          knownCwd = facts.cwd || knownCwd;
           debug("welcome-ok", facts);
           return facts;
         },
@@ -4372,7 +4498,7 @@ var plugin_default = {
           const body = text.trim();
           if (!body) return "empty message";
           if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
-          if (!agents.forwarding) return "auto-forward disabled \u2014 Coo must call the tool to deliver words";
+          if (!agents.forwarding) return "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel";
           const agent = agents.owner;
           if (!agent) {
             debug("say-refused-no-owner", {
@@ -4381,12 +4507,12 @@ var plugin_default = {
               isPinned: agents.isPinned,
               forwarding: agents.forwarding
             });
-            return "no conversation is open on the DSH side";
+            return "no conversation is open on the DSH side; a new one can be started with dsh_new_session";
           }
           if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
           try {
             await resolveFactory();
-            agent.followup(buildUserMessage(`${from}\uFF08\u901A\u8FC7\u684C\u5BA0\uFF09\u8BF4\uFF1A${body}`, userTemplate));
+            agent.followup(buildUserMessage(bridgeLine(body, speakerName(from)), userTemplate));
             hub?.send({ t: "notice", kind: "forwarded", text: `\u5DF2\u9012\u9001\u5230 DSH\uFF08\u4F1A\u8BDD ${agents.ownerSession ?? "?"}\uFF09\uFF1A${body.slice(0, 80)}${body.length > 80 ? "\u2026" : ""}` });
             return null;
           } catch (err) {
@@ -4395,12 +4521,66 @@ var plugin_default = {
           }
         },
         pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
+        createSession: async () => {
+          const controller = scoped.get("sessionController");
+          const registry = scoped.get("workspaceRegistry");
+          const workspaces = registry?.list?.() ?? [];
+          const facts = agents.facts();
+          if (facts?.cwd) knownCwd = facts.cwd;
+          debug("create-session", {
+            hasController: Boolean(controller?.commands?.create),
+            workspaces: workspaces.map((workspace) => workspace.id),
+            ownerSession: agents.ownerSession,
+            knownCwd
+          });
+          const before = agents.ownerSession;
+          const outcome = await createConversation(controller, workspaces, before, knownCwd);
+          if ("reason" in outcome) {
+            const after = agents.ownerSession;
+            if (after !== null && after !== before) {
+              log("warn", `created ${after} but DSH could not attach it: ${outcome.reason}`);
+              return { session: after };
+            }
+          }
+          return outcome;
+        },
         log
       });
       hub = pet;
       let lastCheck = null;
       let lastNotifiedVersion = null;
-      const disposeUpgrade = scoped.webServer.registerUpgrade({ path: PET_PATH, handler: allowed(pet.upgrade) });
+      const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade) };
+      const upgradeTable = () => {
+        const table = scoped.webServer.upgrades;
+        return table instanceof Map ? table : null;
+      };
+      const holdsUpgrade = () => {
+        const table = upgradeTable();
+        return table === null ? true : table.get(PET_PATH) === upgradeRoute;
+      };
+      const claimUpgrade = () => {
+        const table = upgradeTable();
+        if (table !== null && table.has(PET_PATH) && table.get(PET_PATH) !== upgradeRoute) {
+          try {
+            table.delete(PET_PATH);
+            log("warn", `took over a stale upgrade route ${PET_PATH}`);
+          } catch {
+          }
+        }
+        try {
+          return scoped.webServer.registerUpgrade(upgradeRoute);
+        } catch (err) {
+          log("warn", `upgrade route ${PET_PATH} not claimed: ${err.message}`);
+          return null;
+        }
+      };
+      let disposeUpgrade = claimUpgrade();
+      const healRoutes = setInterval(() => {
+        if (holdsUpgrade()) return;
+        log("warn", `upgrade route ${PET_PATH} went missing, re-claiming`);
+        disposeUpgrade = claimUpgrade();
+      }, 5e3);
+      healRoutes.unref?.();
       scoped.webServer.register({
         kind: "exact",
         path: "/coopanion/update",
@@ -4448,7 +4628,11 @@ var plugin_default = {
             v: PROTOCOL_VERSION,
             pluginVersion: currentVersion(),
             pet: pet.connected,
+            bound: pet.boundState,
+            route: holdsUpgrade(),
+            pid: process.pid,
             session: facts?.session ?? null,
+            speaker: speakerName(null),
             forwarding: agents.forwarding,
             updateInfo: lastCheck ? {
               hasUpdate: lastCheck.hasUpdate,
@@ -4490,6 +4674,7 @@ var plugin_default = {
             } catch {
             }
             const next = agents.toggleForward(target);
+            writeForwardState(next);
             hub?.send({ t: "notice", kind: "forward-toggle", text: next ? "\u81EA\u52A8\u9012\u9001\u5DF2\u5F00\u542F" : "\u81EA\u52A8\u9012\u9001\u5DF2\u5173\u95ED" });
             res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
             res.end(JSON.stringify({ ok: true, forwarding: next }));
@@ -4543,7 +4728,8 @@ var plugin_default = {
       };
       if (AUTO_CHECK_ENABLED) schedule();
       scoped.effect(() => () => {
-        disposeUpgrade();
+        clearInterval(healRoutes);
+        disposeUpgrade?.();
         pet.close();
         hub = null;
         if (autoTimer) {
@@ -4575,6 +4761,7 @@ var plugin_default = {
         hasFollowup: typeof agent.followup === "function",
         hasInject: typeof agent.inject === "function"
       });
+      knownCwd = agent.session?.header?.cwd ?? knownCwd;
       agents.add(String(id), agent);
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);

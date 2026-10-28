@@ -1,6 +1,6 @@
 {
   "name": "coopanion-connector-dsh",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "type": "module",
   "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it. CSWSH security fix in v0.2.9 (issue #6) — RECOMMENDED to upgrade. Fatfish relayPerson is off by default since v0.6.6 — see README pairing table.",
   "author": "Pal AI Lab",

@@ -1,5 +1,15 @@
 # 更新说明
 
+## 0.2.11 — 未发布
+
+- **没有打开的会话时，桌宠可以在 DSH 侧开一个新会话**：新 `new` 帧 → Host 用 `sessionController.commands.create` 建会话（落在当前会话所属 Workspace，没有则用最近见过的目录、再退到第一个 Workspace），建好即成为 owner 并回 `created`，桌宠随后收到 `ready` 自动接上
+- **已归档的会话不再被当成桌宠的说话对象**：归档只把会话挡在模型调用之外，agent 仍然活着，此前桌宠会"连着"一个已归档会话，话递进去整轮以 `blocked` 结束、没有任何回复。现在 owner 只在未归档的活跃会话里选，全都归档了就等于没有会话，拒绝文案指向 `dsh_new_session`
+- `say` 在没有 owner 时的拒绝文案带上 `dsh_new_session` 提示，桌宠模型能自己补齐这一步
+- 建会话成功但挂到 Workspace 失败时仍回 `created`（会话确实存在并已绑定），不再报"新建失败"让桌宠去找一个已经存在的会话
+- 与桌宠侧配对：`cortico-world-fatfish ≥ 0.6.11`（`dsh_new_session` 工具与「新建会话」按钮）
+- 桥接日志改为按平台落盘：macOS 写 `~/.dsh/logs/coopanion-bridge.jsonl`，Windows 保持原来两处；此前在 macOS 上会生成名为 `\.dsh\logs\coopanion-bridge.jsonl` 的怪文件
+- 本地定制保留：桥接行仍写作 `<本机名>说：…`（macOS `麦麦`、Windows `墨墨`，可用 `COOPANION_HOST_NAME` 覆盖），`/coopanion/status` 带 `speaker`
+
 ## 0.2.9 — 已发布（GitHub Release）
 
 ### ⚠️ 安全修复（issue #6）—— **CSWSH 跨站 WebSocket 劫持**

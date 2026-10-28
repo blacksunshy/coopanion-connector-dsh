@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '../src/pet-hub.ts';
-import { SAY_MAX, argumentNames, assistantText, carriesBridgePrefix, parsePetFrame, reasonText } from '../src/protocol.ts';
+import { SAY_MAX, argumentNames, assistantText, bridgeLine, carriesBridgePrefix, parsePetFrame, reasonText, speakerName } from '../src/protocol.ts';
 import { AgentRegistry, isActiveSessionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
 
 describe('a frame from the pet', () => {
@@ -13,6 +13,7 @@ describe('a frame from the pet', () => {
     expect(parsePetFrame(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo' }))).toEqual({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo' });
     expect(parsePetFrame(JSON.stringify({ t: 'say', id: 'a', text: 'hi', from: '大肥鱼' }))).toEqual({ t: 'say', id: 'a', text: 'hi', from: '大肥鱼' });
     expect(parsePetFrame(JSON.stringify({ t: 'ping' }))).toEqual({ t: 'ping' });
+    expect(parsePetFrame(JSON.stringify({ t: 'new', id: 'n1' }))).toEqual({ t: 'new', id: 'n1' });
   });
 
   it('is refused when it is malformed or from another protocol', () => {
@@ -22,6 +23,7 @@ describe('a frame from the pet', () => {
     expect(parsePetFrame(JSON.stringify({ t: 'say', id: 'a' }))).toBeNull();
     expect(parsePetFrame(JSON.stringify({ t: 'hello', name: 'coo' }))).toBeNull();
     expect(parsePetFrame(JSON.stringify({ t: 'unknown' }))).toBeNull();
+    expect(parsePetFrame(JSON.stringify({ t: 'new' }))).toBeNull();
   });
 
   it('names its sender even when it does not say who that is', () => {
@@ -39,6 +41,27 @@ describe('a line that carries the bridge prefix', () => {
   it('is an ordinary line when no prefix stands at its front', () => {
     expect(carriesBridgePrefix('检查一下今天的天气')).toBe(false);
     expect(carriesBridgePrefix('我说过「（通过桌宠）说：」这种格式')).toBe(false);
+  });
+});
+
+describe('the name this Host speaks under', () => {
+  it('is the platform name the two machines were given', () => {
+    expect(speakerName(null, 'darwin', {})).toBe('麦麦');
+    expect(speakerName(null, 'win32', {})).toBe('墨墨');
+  });
+
+  it('follows an explicit name over the platform one', () => {
+    expect(speakerName('随便', 'darwin', { COOPANION_HOST_NAME: ' 麦麦二号 ' })).toBe('麦麦二号');
+  });
+
+  it('is written into the line DSH reads', () => {
+    expect(bridgeLine('开个新会话', '麦麦')).toBe('麦麦说：开个新会话');
+  });
+
+  it('counts its own line as already carrying the prefix', () => {
+    expect(carriesBridgePrefix('麦麦说：开个新会话')).toBe(true);
+    expect(carriesBridgePrefix('墨墨说：hi', { COOPANION_HOST_NAME: undefined })).toBe(true);
+    expect(carriesBridgePrefix('麦麦说过的')).toBe(false);
   });
 });
 
@@ -111,6 +134,44 @@ describe('which conversation the pet speaks into', () => {
     agents.remove('a');
     expect(agents.owner).toBeNull();
     expect(agents.facts()).toBeNull();
+  });
+
+  it('is nobody when every open conversation has been archived', () => {
+    const agents = new AgentRegistry();
+    agents.setArchivedCheck((id) => id === 'a' || id === 'b');
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    // Archived Sessions stay live in DSH but refuse every model step, so offering one would mean
+    // the pet's words end as `blocked` with no reply.
+    expect(agents.owner).toBeNull();
+    expect(agents.ownerSession).toBeNull();
+    expect(agents.facts()).toBeNull();
+  });
+
+  it('is the newest conversation that is still open when the owner was archived', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    agents.setArchivedCheck((id) => id === 'b');
+    expect(agents.ownerSession).toBe('a');
+  });
+
+  it('does not let a new archived session steal the owner', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.setArchivedCheck((id) => id === 'b');
+    agents.add('b', agentOf('b'));
+    expect(agents.ownerSession).toBe('a');
+  });
+
+  it('refuses to be pointed at an archived conversation', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentOf('a'));
+    agents.add('b', agentOf('b'));
+    agents.setArchivedCheck((id) => id === 'a');
+    expect(agents.setOwner('a')).toBe(false);
+    expect(agents.forceOwner('a')).toBe(false);
+    expect(agents.ownerSession).toBe('b');
   });
 
   it('is nobody when no conversation is open', () => {

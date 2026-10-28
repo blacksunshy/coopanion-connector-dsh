@@ -29,6 +29,8 @@ export type HostFrame =
   | { t: 'question'; text: string }
   /** The turn ended badly. */
   | { t: 'error'; text: string }
+  /** Answers a `new`: the Host created this session and now owns it. */
+  | { t: 'created'; id: string; session: string }
   /**
    * Generic one-shot announcement the Host wants the pet to surface.
    * `kind` groups them (e.g. "update-available") so a pet can pick which to show;
@@ -49,6 +51,11 @@ export type PetFrame =
    * Host refuses a session that is not live with a `refused` frame.
    */
   | { t: 'pick'; session: string }
+  /**
+   * Start a new conversation on the DSH side and make it the owner, so the pet has somewhere to
+   * speak when every session it knew has been archived. `id` is echoed in `created`/`refused`.
+   */
+  | { t: 'new'; id: string }
   | { t: 'ping' };
 
 /** Host→pet answers to a `say`. */
@@ -78,6 +85,9 @@ export function parsePetFrame(raw: string): PetFrame | null {
     case 'pick':
       if (typeof frame.session !== 'string' || !frame.session) return null;
       return { t: 'pick', session: frame.session.slice(0, 128) };
+    case 'new':
+      if (typeof frame.id !== 'string' || !frame.id) return null;
+      return { t: 'new', id: frame.id.slice(0, 64) };
     default:
       return null;
   }
@@ -90,17 +100,52 @@ export const SAY_MAX = 4000;
 export const REPLY_MAX = 2000;
 
 /**
- * The prefix this Host writes on a line it submits for the pet: `${from}（通过桌宠）说：`.
+ * The name this Host speaks under, and the line it writes into DSH.
+ *
+ * A local customisation on this machine (see `~/.dsh/AGENTS.md`): the Mac host is 麦麦 and the
+ * Windows host is 墨墨, so both DSH and the pet call the same thing by the same name.
+ * `COOPANION_HOST_NAME` overrides it for a host that wants another name.
+ */
+const HOST_NAME_ENV = 'COOPANION_HOST_NAME';
+const PLATFORM_NAMES: Record<string, string> = { win32: '墨墨', darwin: '麦麦' };
+
+/** The name this Host's lines are attributed to. */
+export function speakerName(from: string | null, platform = process.platform, env = process.env): string {
+  const configured = env[HOST_NAME_ENV]?.trim();
+  if (configured) return configured.slice(0, 64);
+  const named = PLATFORM_NAMES[platform];
+  if (named) return named;
+  return (from ?? '').trim().slice(0, 64) || '桌宠';
+}
+
+/** One line for DSH, attributed to this Host's name. */
+export function bridgeLine(text: string, name: string): string {
+  return `${name}说：${text}`;
+}
+
+/**
+ * Prefixes this Host writes on a line it submits for the pet, plus the legacy 0.2.x form
+ * `${from}（通过桌宠）说：` that earlier lines in old sessions still carry.
  *
  * The name part is letters, digits, spaces, hyphens and underscores, so a person's line that
- * merely quotes the prefix further in is not mistaken for one of ours. A pet that writes the
- * prefix itself has a second one wrapped around its text, and each hand-over would add another.
+ * merely quotes a prefix further in is not mistaken for one of ours. A pet that writes a prefix
+ * itself has a second one wrapped around its text, and each hand-over would add another.
  */
-const BRIDGE_PREFIX = /^[\p{L}\p{N}_\- ]{1,64}（通过桌宠）说：/u;
+const LEGACY_BRIDGE_PREFIX = /^[\p{L}\p{N}_\- ]{1,64}（通过桌宠）说：/u;
+
+/** The names whose `说：` line counts as this Host's own prefix. */
+function bridgeSignatures(env = process.env): string[] {
+  const names = new Set(Object.values(PLATFORM_NAMES));
+  const configured = env[HOST_NAME_ENV]?.trim();
+  if (configured) names.add(configured);
+  return [...names];
+}
 
 /** True when `text` already carries this Host's prefix, so submitting it would nest a second one. */
-export function carriesBridgePrefix(text: string): boolean {
-  return BRIDGE_PREFIX.test(text.trim());
+export function carriesBridgePrefix(text: string, env = process.env): boolean {
+  const line = text.trim();
+  if (LEGACY_BRIDGE_PREFIX.test(line)) return true;
+  return bridgeSignatures(env).some((name) => line.startsWith(`${name}说：`));
 }
 
 /**

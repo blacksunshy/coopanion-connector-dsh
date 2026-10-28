@@ -8,13 +8,15 @@ DeepSeek Harness（DSH）bundle 插件：Coopanion 桌宠桥接的 Host 半区�
 
 | 方向 | 帧 |
 |---|---|
-| Host → 桌宠 | `ready`、`turn-start`、`turn-end`、`reply`、`tool`、`approval`、`question`、`error` |
-| 桌宠 → Host | `hello`、`say`、`ping`；Host 对 `say` 回 `accepted` 或 `refused` |
+| Host → 桌宠 | `ready`、`turn-start`、`turn-end`、`reply`、`tool`、`approval`、`question`、`error`、`created` |
+| 桌宠 → Host | `hello`、`say`、`new`、`ping`；Host 对 `say` 回 `accepted` 或 `refused`，对 `new` 回 `created` 或 `refused` |
 
 - 没有桌宠在线时通知直接丢弃、不排队：DSH 的活不等桌宠，重放的回合只会在你已经在控制台读完之后才冒泡。`say` 有回执，桌宠能如实报告"没转交"而不是猜。
 - 文本里已带本 Host 前缀（`…（通过桌宠）说：`）的 `say` 会被拒收：再提交一次就会套两层前缀。
 - `tool` 通知只带工具名和参数名、不带值：到达桌宠的东西会进模型的上下文和事件流，秘密收不回来。
 - 接收 `say` 的对话是"最新的、非子代理的活跃 agent"——回答气泡的子代理是你没打开过的说话人。
+- 没有打开的会话时（例如把所有会话都归档了），`say` 会被拒回，`new` 让桌宠在 DSH 侧开一个新会话：走 `sessionController.commands.create`，落在当前会话所属的 Workspace，建好即成为 owner，桌宠随后收到 `ready`。
+- 已归档的会话不算"打开的会话"：归档只挡住模型调用，agent 还在，所以 owner 只在未归档的活跃会话里挑；桌宠不会把一个已归档会话当成说话对象。
 
 ## 安装
 
@@ -85,6 +87,7 @@ pnpm run build          # 产出 dist/index.cjs
 | 在线自更新（`/coopanion/check-update`、`/coopanion/update`） | ≥ 0.2.4 | 不涉及 |
 | **CSWSH 安全修复**（`Origin` 拒绝，issue #6） | **≥ 0.2.9** | 不涉及（但 fatfish 0.6.6 起加了互引提醒） |
 | `relayPerson` 默认 `true`（转发人物的话） | 不涉及（Host 侧不替桌宠做默认） | **≥ 0.6.9**（0.6.6 曾改默认关，0.6.9 改回 true——默认关 = 升级后主路径功能消失） |
+| 没有会话时新建（`new` 帧、桌宠侧 `dsh_new_session` 与面板「新建会话」） | **≥ 0.2.11** | **≥ 0.6.11** |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
