@@ -4142,7 +4142,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.7") return "0.2.7";
+  if ("0.2.8") return "0.2.8";
   try {
     const pkg = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4253,6 +4253,7 @@ var LOOPBACK = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(:\d+)?$/i;
 var PLUGIN_NAME = "coopanion-connector-dsh";
 var AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1e3;
 var AUTO_CHECK_INITIAL_DELAY_MS = 30 * 1e3;
+var AUTO_CHECK_ENABLED = Boolean(process.env.AUTO_UPDATE_CHECK) || process.env.AUTO_UPDATE_CHECK === "1";
 function proveLoad() {
   const line = `${JSON.stringify({
     at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -4540,7 +4541,7 @@ var plugin_default = {
         }, AUTO_CHECK_INITIAL_DELAY_MS);
         autoTimer.unref?.();
       };
-      schedule();
+      if (AUTO_CHECK_ENABLED) schedule();
       scoped.effect(() => () => {
         disposeUpgrade();
         pet.close();
@@ -4643,6 +4644,10 @@ var plugin_default = {
 };
 function allowed(next) {
   return (req, socket, head) => {
+    if (req.headers.origin) {
+      socket.destroy();
+      return;
+    }
     if (!LOOPBACK.test(req.headers.host ?? "")) {
       socket.destroy();
       return;

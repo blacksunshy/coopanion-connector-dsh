@@ -58,6 +58,14 @@ const PLUGIN_NAME = 'coopanion-connector-dsh';
 const AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 /** Host 启动后先等这么久再跑第一次检查，别跟 DSH 自己的启动抢网络。 */
 const AUTO_CHECK_INITIAL_DELAY_MS = 30 * 1000;
+/**
+ * 后台自动检查是否默认开启。
+ *
+ * 默认 **false** — 用户没显式授权的情况下不要主动连 GitHub。手动 `POST /coopanion/check-update` 路由
+ * 和 `/coopanion/update` 页面的"检查"按钮不受影响，仍然可用。
+ * 设环境变量 AUTO_UPDATE_CHECK=1 可开启后台定时检查。
+ */
+const AUTO_CHECK_ENABLED = Boolean(process.env.AUTO_UPDATE_CHECK) || process.env.AUTO_UPDATE_CHECK === '1';
 
 /**
  * Proof of load, appended once per activation.
@@ -394,6 +402,7 @@ export default {
       });
 
       // 后台定时检查：Host 起来 30s 后第一次跑，之后每 30 min 一次。
+      // 默认关闭，设 AUTO_UPDATE_CHECK=1 才启动 — 用户没显式授权的情况下不主动连 GitHub。
       let autoTimer: NodeJS.Timeout | null = null;
       const schedule = (): void => {
         autoTimer = setTimeout(async () => {
@@ -419,7 +428,7 @@ export default {
         }, AUTO_CHECK_INITIAL_DELAY_MS);
         autoTimer.unref?.();
       };
-      schedule();
+      if (AUTO_CHECK_ENABLED) schedule();
 
       scoped.effect(() => () => {
         disposeUpgrade();
@@ -532,9 +541,19 @@ export default {
   },
 };
 
-/** Refuses a non-loopback Host, so a web page cannot reach the bridge through DNS rebinding. */
+/** Refuses a non-loopback Host, so a web page cannot reach the bridge through DNS rebinding.
+ *
+ * Also refuses any WebSocket upgrade that carries an `Origin` header — browsers always include
+ * one when they open a WS, while native Node clients (the real pet) do not. This blocks CSWSH:
+ * a malicious page cannot silently `new WebSocket("ws://127.0.0.1:<port>/coopanion/pet")` and
+ * inject frames into the bridge. */
 function allowed(next: (req: IncomingMessage, socket: Duplex, head: Buffer) => void) {
   return (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    // 浏览器发 WebSocket 必带 Origin，原生 Node 客户端不带：拒绝带 Origin 的连接
+    if (req.headers.origin) {
+      socket.destroy();
+      return;
+    }
     if (!LOOPBACK.test(req.headers.host ?? '')) {
       socket.destroy();
       return;
