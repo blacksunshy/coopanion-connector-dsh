@@ -110,12 +110,59 @@ function proveLoad(): void {
 const DEBUG_BRIDGE = Boolean(process.env.DEBUG_BRIDGE) || process.env.DEBUG_BRIDGE === '1';
 function debug(tag: string, detail?: unknown): void {
   if (!DEBUG_BRIDGE) return;
+  writeBridgeLine(tag, detail);
+}
+
+/**
+ * An always-on lifecycle line, written regardless of `DEBUG_BRIDGE`.
+ *
+ * These are the few milestones a person needs to answer "did the plugin load and register its
+ * routes" without setting an env var and restarting the Host. Verbose event traces stay behind
+ * `debug()`. Each line carries a `tag`, so `Select-String -Pattern '"tag"'` on the jsonl shows
+ * only the signal.
+ */
+function logLine(tag: string, detail?: unknown): void {
+  writeBridgeLine(tag, detail);
+}
+
+function writeBridgeLine(tag: string, detail?: unknown): void {
   try {
     const line = `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, tag, detail })}\n`;
     for (const file of bridgeLogFiles()) {
       try { appendFileSync(file, line); } catch { /* path unwritable on this host */ }
     }
-  } catch { /* best-effort; never let debug break the bridge */ }
+  } catch { /* best-effort; never let logging break the bridge */ }
+}
+
+/**
+ * Best-effort read of the address the Host's web server listens on.
+ *
+ * The desktop Host picks a new port on every launch, so a person configuring the pet cannot
+ * know it in advance. DSH does not hand the plugin a typed `address()`, so this probes the
+ * common shapes a web-server wrapper exposes and returns the first `host:port` it finds, or
+ * `null` when none is reachable (the first request then fills it in from its `Host` header).
+ */
+function probeListeningAddress(webServer: unknown): string | null {
+  const ws = webServer as {
+    address?: () => unknown;
+    server?: { address?: () => unknown };
+    httpServer?: { address?: () => unknown };
+  };
+  const candidates = [
+    () => ws.address?.call(ws),
+    () => ws.server?.address?.call(ws.server),
+    () => ws.httpServer?.address?.call(ws.httpServer),
+  ];
+  for (const get of candidates) {
+    try {
+      const addr = get();
+      if (addr && typeof addr === 'object') {
+        const a = addr as { address?: string; port?: number };
+        if (a.port) return `${a.address && a.address !== '::' ? a.address : '127.0.0.1'}:${a.port}`;
+      }
+    } catch { /* try the next shape */ }
+  }
+  return null;
 }
 
 /** JSON.stringify that tolerates circular refs — replaces them with `[Circular]`. */
@@ -198,10 +245,91 @@ export function buildUserMessage(
   return { id: randomUUID(), role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } };
 }
 
+/**
+ * Pick up conversations that were already open when this Host started.
+ *
+ * On desktop builds DSH does not always re-emit `agent/created` for sessions the person opened
+ * before the plugin loaded — leaving the registry empty and the pet stuck on "no conversation is
+ * open" until the person speaks again. The Session Controller is the same object the settings
+ * window uses, so it is the most likely place an enumeration lives; this probes the method names
+ * such objects typically carry and registers every agent it can actually submit a message to.
+ *
+ * Best-effort by design: DSH's internal API is not typed here, so every access is guarded and an
+ * unknown shape is a no-op. The result is logged so a missing enumeration is visible in the bridge
+ * log rather than silently producing an empty registry.
+ */
+async function rescanExistingSessions(
+  scoped: DshContext,
+  agents: AgentRegistry,
+  log: (tag: string, detail?: unknown) => void,
+): Promise<void> {
+  type AnyObj = Record<string, unknown>;
+  try {
+    const controller = scoped.get('sessionController') as AnyObj | undefined;
+    const registry = scoped.get('workspaceRegistry') as { list?: () => Array<{ sessionIds?: string[] }> } | undefined;
+
+    // 1. Collect candidate session ids from the workspace registry.
+    const ids = new Set<string>();
+    try {
+      for (const workspace of registry?.list?.() ?? []) {
+        for (const id of workspace.sessionIds ?? []) if (id) ids.add(id);
+      }
+    } catch { /* registry shape unknown */ }
+
+    // 2. Try to obtain an agent object per id from whatever the controller exposes.
+    const getters = ['get', 'agent', 'getAgent', 'session', 'getSession'] as const;
+    let obtained = 0;
+    for (const id of ids) {
+      let agent: unknown = undefined;
+      for (const name of getters) {
+        const fn = (controller as AnyObj | undefined)?.[name] as ((id: string) => unknown) | undefined;
+        if (typeof fn !== 'function') continue;
+        try { agent = fn.call(controller, id); } catch { continue; }
+        if (agent) break;
+      }
+      // Also accept `controller.agents` / `.sessions` as a Map/array of agent-like objects.
+      if (!agent) {
+        for (const coll of ['agents', 'sessions', 'live'] as const) {
+          const c = (controller as AnyObj | undefined)?.[coll];
+          if (c instanceof Map) { agent = c.get(id); break; }
+          if (Array.isArray(c)) {
+            agent = c.find((x) => (x as { session?: { id?: string } })?.session?.id === id);
+            break;
+          }
+        }
+      }
+      const a = agent as { followup?: unknown; session?: { id?: string; header?: { cwd?: string } } } | undefined;
+      if (a && typeof a.followup === 'function' && a.session?.id) {
+        agents.add(String(a.session.id), a as never);
+        obtained++;
+      }
+    }
+
+    // 3. If the controller exposes a flat list of agents directly, register those too.
+    for (const coll of ['agents', 'sessions', 'list', 'listSessions'] as const) {
+      const c = (controller as AnyObj | undefined)?.[coll];
+      const items: unknown[] = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
+      for (const item of items) {
+        const a = item as { followup?: unknown; session?: { id?: string } } | undefined;
+        if (a && typeof a.followup === 'function' && a.session?.id) {
+          const sid = String(a.session.id);
+          if (!ids.has(sid)) { ids.add(sid); obtained++; }
+          agents.add(sid, a as never);
+        }
+      }
+    }
+
+    log('rescan-existing', { sessionIds: ids.size, registered: obtained });
+  } catch (err) {
+    log('rescan-existing-failed', { error: (err as Error).message });
+  }
+}
+
 export default {
   name: PLUGIN_NAME,
   apply(root: DshContext): void {
     proveLoad();
+    logLine('apply-started', { hasWebServer: Boolean(root.webServer) });
     const agents = new AgentRegistry();
     // DSH's archive set, read at each ownership decision: an archived Session stays live but every
     // model step proposed for it is rejected, so speaking into one would end as `blocked`.
@@ -211,6 +339,8 @@ export default {
     });
     /** The directory of the newest conversation seen, so a pet-made session lands in the same project. */
     let knownCwd: string | null = null;
+    /** The Host's listening `host:port`, captured once from the first request when available. */
+    let capturedHost: string | null = null;
     // 恢复上次的转发开关；没有状态文件时用 AgentRegistry 的默认值（true，即默认开）
     {
       const persisted = readForwardState();
@@ -235,7 +365,12 @@ export default {
       hub?.send(frame);
     };
 
+    // `webServer` is provided by the Host's web console; a Host that runs without one (some
+    // desktop entry paths) would make `inject` throw. Catch it so the bridge log records the
+    // missing service instead of leaving only the prove-load line behind.
+    try {
     root.inject(['webServer'], (scoped) => {
+      try {
       const pet = new PetHub({
         welcome: () => {
           const facts = agents.facts();
@@ -408,7 +543,13 @@ export default {
       scoped.webServer!.register({
         kind: 'exact',
         path: '/coopanion/status',
-        handler: (_req, res) => {
+        handler: (req, res) => {
+          // The Host's listening port changes every desktop launch; capture it from the first
+          // request's Host header when the web-server wrapper does not expose an address().
+          if (capturedHost === null) {
+            capturedHost = typeof req.headers.host === 'string' ? req.headers.host : null;
+            if (capturedHost) logLine('listening-address', { host: capturedHost, source: 'request-host' });
+          }
           const facts = agents.facts();
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           res.end(JSON.stringify({
@@ -599,8 +740,23 @@ export default {
         if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
       });
       log('info', `bridge listening on ${PET_PATH}`);
+      const listening = probeListeningAddress(scoped.webServer);
+      logLine('routes-registered', { petPath: PET_PATH, address: listening });
       debug('apply-done', { petPath: PET_PATH, hasWebServer: true });
+      // Conversations opened before the plugin loaded may never re-emit `agent/created` on
+      // desktop hosts, which leaves the registry empty and the pet stuck on "no conversation".
+      // Probe the Session Controller for whatever enumeration DSH exposes and register the ones
+      // we can actually speak into. This is best-effort: an unknown shape is a no-op.
+      void rescanExistingSessions(scoped, agents, logLine);
+      } catch (err) {
+        // Log but do not rethrow: a partial route registration is better than taking the whole
+        // plugin (and the Host's activation) down. The `webserver-init-failed` line is the trace.
+        logLine('webserver-init-failed', { error: (err as Error).message });
+      }
     });
+    } catch (err) {
+      logLine('webserver-missing', { error: (err as Error).message });
+    }
 
     root.effect(() => () => {
       pending.length = 0;
@@ -610,7 +766,10 @@ export default {
       const agent = payload?.agent;
       const id = agent?.session?.id;
       if (!agent || !id) {
-        debug('agent-created-skipped', {
+        // Always-on: this is the single most diagnostic line for the "no conversation is open"
+        // bug. If the desktop Host fires `agent/created` with a shape our CreatedPayload does
+        // not match, the raw payload here tells us exactly what to adapt to.
+        logLine('agent-created-skipped', {
           hasAgent: Boolean(agent),
           sessionId: agent?.session?.id ?? null,
           sessionKeys: agent ? Object.keys(agent as object) : null,

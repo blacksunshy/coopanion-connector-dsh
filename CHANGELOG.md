@@ -1,5 +1,14 @@
 # 更新说明
 
+## 0.2.13 — 已发布（GitHub Release）
+
+桌面端可诊断性 + 已有会话补扫（针对 issue #5）：
+
+- 生命周期日志默认常开（无需 `DEBUG_BRIDGE`）：`apply-started`、`routes-registered`（附监听地址）、`listening-address`（首个请求的 Host 头）、`agent-created-skipped`（带 rawPayload，直接判断桌面端是否发了结构不对的 `agent/created`）、`rescan-existing`（启动时扫到的已有会话数）
+- 启动时探测 `sessionController` / `workspaceRegistry` 枚举已有会话并注册（best-effort，未知结构不报错）：桌面端有时不重发已打开会话的 `agent/created`，此前会导致 `facts()` 一直为 null、桌宠收到 "no conversation is open"
+- `inject(['webServer'])` 失败时写 `webserver-missing`，不再只剩一行 prove-load 让用户无从判断
+- README 修正日志路径（桌面端通常是 `%USERPROFILE%\.dsh\logs\coopanion-bridge.jsonl`）并补充 `DEBUG_BRIDGE` 桌面端开启方式
+
 ## 0.2.12 — 已发布（GitHub Release）
 
 主要内容来自 PR #7，致谢 @ink1453（静墨）。

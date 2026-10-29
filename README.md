@@ -75,7 +75,9 @@ pnpm run build          # 产出 dist/index.cjs
 ### 装完怎么确认
 
 - `GET http://127.0.0.1:<DSH 端口>/coopanion/status` → `{"ok":true,"v":1,"pet":…,"session":…}`
-- `%APPDATA%\@deepseek-ai\dsh-desktop\logs\coopanion-bridge.jsonl` 多写一行，写明加载它的进程——这一行是"插件被加载"的证据；没有它说明没加载上，与"加载了但桌宠没连上"是两回事
+- 桥接日志写在两处（取存在的那个）：`%USERPROFILE%\.dsh\logs\coopanion-bridge.jsonl` 与 `%APPDATA%\@deepseek-ai\dsh-desktop\logs\coopanion-bridge.jsonl`。桌面端通常只有前者存在
+- 日志里默认就有带 `"tag"` 的生命周期行，**不需要设环境变量**：`apply-started`（插件已加载）、`routes-registered`（路由已注册，附带监听地址）、`listening-address`（从首个请求的 Host 头拿到的 `host:port`）、`agent-created-skipped`（DSH 发了 `agent/created` 但结构对不上，会带 rawPayload）、`rescan-existing`（启动时扫到的已有会话数）。`Select-String -Path <jsonl> -Pattern '"tag"'` 只看这些信号
+- 想看更详细的事件轨迹（每个 `session/event`、auto-follow 等），设 `DEBUG_BRIDGE=1` 再启动 DSH：桌面端要在同一个 PowerShell 里 `$env:DEBUG_BRIDGE="1"` 后从那里启动 `DeepSeek Harness.exe`，否则环境变量传不进去
 - **Coopanion 侧还要装 [`cortico-world-fatfish`](https://github.com/blacksunshy/coopanion-fatfish)**，否则桥建起来但没有桌宠来连
 
 ### 与桌宠侧的版本配对

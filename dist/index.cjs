@@ -4289,7 +4289,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.12") return "0.2.12";
+  if ("0.2.13") return "0.2.13";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4420,6 +4420,12 @@ function proveLoad() {
 var DEBUG_BRIDGE = Boolean(process.env.DEBUG_BRIDGE) || process.env.DEBUG_BRIDGE === "1";
 function debug(tag, detail) {
   if (!DEBUG_BRIDGE) return;
+  writeBridgeLine(tag, detail);
+}
+function logLine(tag, detail) {
+  writeBridgeLine(tag, detail);
+}
+function writeBridgeLine(tag, detail) {
   try {
     const line = `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), pid: process.pid, tag, detail })}
 `;
@@ -4431,6 +4437,25 @@ function debug(tag, detail) {
     }
   } catch {
   }
+}
+function probeListeningAddress(webServer) {
+  const ws = webServer;
+  const candidates = [
+    () => ws.address?.call(ws),
+    () => ws.server?.address?.call(ws.server),
+    () => ws.httpServer?.address?.call(ws.httpServer)
+  ];
+  for (const get of candidates) {
+    try {
+      const addr = get();
+      if (addr && typeof addr === "object") {
+        const a = addr;
+        if (a.port) return `${a.address && a.address !== "::" ? a.address : "127.0.0.1"}:${a.port}`;
+      }
+    } catch {
+    }
+  }
+  return null;
 }
 function safeStringify(value, space = 0) {
   const seen = /* @__PURE__ */ new WeakSet();
@@ -4476,16 +4501,82 @@ function buildUserMessage(text, template, factoryOverride = factory ?? null) {
   }
   return { id: (0, import_node_crypto.randomUUID)(), role: "user", content: [{ type: "text", text }], source: { kind: "user" } };
 }
+async function rescanExistingSessions(scoped, agents, log) {
+  try {
+    const controller = scoped.get("sessionController");
+    const registry = scoped.get("workspaceRegistry");
+    const ids = /* @__PURE__ */ new Set();
+    try {
+      for (const workspace of registry?.list?.() ?? []) {
+        for (const id of workspace.sessionIds ?? []) if (id) ids.add(id);
+      }
+    } catch {
+    }
+    const getters = ["get", "agent", "getAgent", "session", "getSession"];
+    let obtained = 0;
+    for (const id of ids) {
+      let agent = void 0;
+      for (const name of getters) {
+        const fn = controller?.[name];
+        if (typeof fn !== "function") continue;
+        try {
+          agent = fn.call(controller, id);
+        } catch {
+          continue;
+        }
+        if (agent) break;
+      }
+      if (!agent) {
+        for (const coll of ["agents", "sessions", "live"]) {
+          const c = controller?.[coll];
+          if (c instanceof Map) {
+            agent = c.get(id);
+            break;
+          }
+          if (Array.isArray(c)) {
+            agent = c.find((x) => x?.session?.id === id);
+            break;
+          }
+        }
+      }
+      const a = agent;
+      if (a && typeof a.followup === "function" && a.session?.id) {
+        agents.add(String(a.session.id), a);
+        obtained++;
+      }
+    }
+    for (const coll of ["agents", "sessions", "list", "listSessions"]) {
+      const c = controller?.[coll];
+      const items = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
+      for (const item of items) {
+        const a = item;
+        if (a && typeof a.followup === "function" && a.session?.id) {
+          const sid = String(a.session.id);
+          if (!ids.has(sid)) {
+            ids.add(sid);
+            obtained++;
+          }
+          agents.add(sid, a);
+        }
+      }
+    }
+    log("rescan-existing", { sessionIds: ids.size, registered: obtained });
+  } catch (err) {
+    log("rescan-existing-failed", { error: err.message });
+  }
+}
 var plugin_default = {
   name: PLUGIN_NAME,
   apply(root) {
     proveLoad();
+    logLine("apply-started", { hasWebServer: Boolean(root.webServer) });
     const agents = new AgentRegistry();
     agents.setArchivedCheck((id) => {
       const registry = root.get("workspaceRegistry");
       return registry?.archivedSessionIds?.includes(id) ?? false;
     });
     let knownCwd = null;
+    let capturedHost = null;
     {
       const persisted = readForwardState();
       if (persisted !== null) agents.toggleForward(persisted);
@@ -4503,331 +4594,346 @@ var plugin_default = {
     const notify = (frame) => {
       hub?.send(frame);
     };
-    root.inject(["webServer"], (scoped) => {
-      const pet = new PetHub({
-        welcome: () => {
-          const facts = agents.facts();
-          if (!facts) {
-            debug("welcome-null", {
-              liveCount: agents.liveSize,
-              ownerSession: agents.ownerSession,
-              isPinned: agents.isPinned
-            });
-            return null;
-          }
-          knownCwd = facts.cwd || knownCwd;
-          debug("welcome-ok", facts);
-          return facts;
-        },
-        say: async (text, from) => {
-          const body = text.trim();
-          if (!body) return "empty message";
-          if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
-          if (!agents.forwarding) return "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel";
-          const agent = agents.owner;
-          if (!agent) {
-            debug("say-refused-no-owner", {
-              liveCount: agents.liveSize,
-              ownerSession: agents.ownerSession,
-              isPinned: agents.isPinned,
-              forwarding: agents.forwarding
-            });
-            return "no conversation is open on the DSH side; a new one can be started with dsh_new_session";
-          }
-          if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
-          try {
-            await resolveFactory();
-            agent.followup(buildUserMessage(`${from}\uFF08\u901A\u8FC7\u684C\u5BA0\uFF09\u8BF4\uFF1A${body}`, userTemplate));
-            hub?.send({ t: "notice", kind: "forwarded", text: `\u5DF2\u9012\u9001\u5230 DSH\uFF08\u4F1A\u8BDD ${agents.ownerSession ?? "?"}\uFF09\uFF1A${body.slice(0, 80)}${body.length > 80 ? "\u2026" : ""}` });
-            return null;
-          } catch (err) {
-            hub?.send({ t: "notice", kind: "forward-failed", text: `\u9012\u9001\u5931\u8D25\uFF1A${err.message}` });
-            return `DSH refused the message: ${err.message}`;
-          }
-        },
-        pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
-        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
-        unpin: () => {
-          agents.clearPin();
-          return null;
-        },
-        createSession: async () => {
-          const controller = scoped.get("sessionController");
-          const registry = scoped.get("workspaceRegistry");
-          const workspaces = registry?.list?.() ?? [];
-          const facts = agents.facts();
-          if (facts?.cwd) knownCwd = facts.cwd;
-          debug("create-session", {
-            hasController: Boolean(controller?.commands?.create),
-            workspaces: workspaces.map((workspace) => workspace.id),
-            ownerSession: agents.ownerSession,
-            knownCwd
-          });
-          const before = agents.ownerSession;
-          const outcome = await createConversation(controller, workspaces, before, knownCwd);
-          if ("reason" in outcome) {
-            const after = agents.ownerSession;
-            if (after !== null && after !== before) {
-              log("warn", `created ${after} but DSH could not attach it: ${outcome.reason}`);
-              return { session: after };
-            }
-          }
-          return outcome;
-        },
-        log
-      });
-      hub = pet;
-      let lastCheck = null;
-      let lastNotifiedVersion = null;
-      const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade) };
-      const upgradeTable = () => {
-        const table = scoped.webServer.upgrades;
-        return table instanceof Map ? table : null;
-      };
-      const holdsUpgrade = () => {
-        const table = upgradeTable();
-        return table === null ? true : table.get(PET_PATH) === upgradeRoute;
-      };
-      const claimUpgrade = () => {
-        const table = upgradeTable();
-        if (table !== null && table.has(PET_PATH) && table.get(PET_PATH) !== upgradeRoute) {
-          try {
-            table.delete(PET_PATH);
-            log("warn", `took over a stale upgrade route ${PET_PATH}`);
-          } catch {
-          }
-        }
+    try {
+      root.inject(["webServer"], (scoped) => {
         try {
-          return scoped.webServer.registerUpgrade(upgradeRoute);
-        } catch (err) {
-          log("warn", `upgrade route ${PET_PATH} not claimed: ${err.message}`);
-          return null;
-        }
-      };
-      let disposeUpgrade = claimUpgrade();
-      const healRoutes = setInterval(() => {
-        if (holdsUpgrade()) return;
-        log("warn", `upgrade route ${PET_PATH} went missing, re-claiming`);
-        disposeUpgrade = claimUpgrade();
-      }, 5e3);
-      healRoutes.unref?.();
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/update",
-        handler: async (req, res) => {
-          if (req.method === "GET") {
-            const cur = currentVersion();
-            res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-            res.end(buildUpdatePage(cur));
-            return;
-          }
-          if (req.method === "POST") {
-            await handleDoUpdate(res);
-            return;
-          }
-          res.writeHead(405, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: false, error: "use GET for the UI or POST for the update" }));
-        }
-      });
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/do-update",
-        handler: async (_req, res) => {
-          await handleDoUpdate(res);
-        }
-      });
-      async function handleDoUpdate(res) {
-        const result = await performUpdate();
-        res.writeHead(result.ok ? 200 : 500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-        res.end(JSON.stringify(result));
-        if (result.ok) {
-          log("info", `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
-          lastNotifiedVersion = result.to ?? null;
-        } else {
-          log("warn", `self-update failed: ${result.error}`);
-        }
-      }
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/status",
-        handler: (_req, res) => {
-          const facts = agents.facts();
-          res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          res.end(JSON.stringify({
-            ok: true,
-            v: PROTOCOL_VERSION,
-            pluginVersion: currentVersion(),
-            pet: pet.connected,
-            bound: pet.boundState,
-            route: holdsUpgrade(),
-            pid: process.pid,
-            session: facts?.session ?? null,
-            forwarding: agents.forwarding,
-            updateInfo: lastCheck ? {
-              hasUpdate: lastCheck.hasUpdate,
-              current: lastCheck.current,
-              latest: lastCheck.latest,
-              releaseUrl: lastCheck.releaseUrl,
-              releaseName: lastCheck.releaseName,
-              checkedAt: (/* @__PURE__ */ new Date()).toISOString()
-            } : null,
-            updateUrl: "/coopanion/update"
-          }));
-        }
-      });
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/forward",
-        handler: (req, res) => {
-          if (req.method !== "POST") {
-            res.writeHead(405, { "content-type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: "use POST" }));
-            return;
-          }
-          let target;
-          try {
-            if (req.headers["content-length"]) {
-            }
-          } catch {
-          }
-          let body = "";
-          req.on("data", (chunk) => {
-            body += chunk.toString();
-          });
-          req.on("end", () => {
-            try {
-              if (body) {
-                const parsed = JSON.parse(body);
-                if (typeof parsed.on === "boolean") target = parsed.on;
+          const pet = new PetHub({
+            welcome: () => {
+              const facts = agents.facts();
+              if (!facts) {
+                debug("welcome-null", {
+                  liveCount: agents.liveSize,
+                  ownerSession: agents.ownerSession,
+                  isPinned: agents.isPinned
+                });
+                return null;
               }
-            } catch {
+              knownCwd = facts.cwd || knownCwd;
+              debug("welcome-ok", facts);
+              return facts;
+            },
+            say: async (text, from) => {
+              const body = text.trim();
+              if (!body) return "empty message";
+              if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
+              if (!agents.forwarding) return "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel";
+              const agent = agents.owner;
+              if (!agent) {
+                debug("say-refused-no-owner", {
+                  liveCount: agents.liveSize,
+                  ownerSession: agents.ownerSession,
+                  isPinned: agents.isPinned,
+                  forwarding: agents.forwarding
+                });
+                return "no conversation is open on the DSH side; a new one can be started with dsh_new_session";
+              }
+              if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
+              try {
+                await resolveFactory();
+                agent.followup(buildUserMessage(`${from}\uFF08\u901A\u8FC7\u684C\u5BA0\uFF09\u8BF4\uFF1A${body}`, userTemplate));
+                hub?.send({ t: "notice", kind: "forwarded", text: `\u5DF2\u9012\u9001\u5230 DSH\uFF08\u4F1A\u8BDD ${agents.ownerSession ?? "?"}\uFF09\uFF1A${body.slice(0, 80)}${body.length > 80 ? "\u2026" : ""}` });
+                return null;
+              } catch (err) {
+                hub?.send({ t: "notice", kind: "forward-failed", text: `\u9012\u9001\u5931\u8D25\uFF1A${err.message}` });
+                return `DSH refused the message: ${err.message}`;
+              }
+            },
+            pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
+            listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+            unpin: () => {
+              agents.clearPin();
+              return null;
+            },
+            createSession: async () => {
+              const controller = scoped.get("sessionController");
+              const registry = scoped.get("workspaceRegistry");
+              const workspaces = registry?.list?.() ?? [];
+              const facts = agents.facts();
+              if (facts?.cwd) knownCwd = facts.cwd;
+              debug("create-session", {
+                hasController: Boolean(controller?.commands?.create),
+                workspaces: workspaces.map((workspace) => workspace.id),
+                ownerSession: agents.ownerSession,
+                knownCwd
+              });
+              const before = agents.ownerSession;
+              const outcome = await createConversation(controller, workspaces, before, knownCwd);
+              if ("reason" in outcome) {
+                const after = agents.ownerSession;
+                if (after !== null && after !== before) {
+                  log("warn", `created ${after} but DSH could not attach it: ${outcome.reason}`);
+                  return { session: after };
+                }
+              }
+              return outcome;
+            },
+            log
+          });
+          hub = pet;
+          let lastCheck = null;
+          let lastNotifiedVersion = null;
+          const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade) };
+          const upgradeTable = () => {
+            const table = scoped.webServer.upgrades;
+            return table instanceof Map ? table : null;
+          };
+          const holdsUpgrade = () => {
+            const table = upgradeTable();
+            return table === null ? true : table.get(PET_PATH) === upgradeRoute;
+          };
+          const claimUpgrade = () => {
+            const table = upgradeTable();
+            if (table !== null && table.has(PET_PATH) && table.get(PET_PATH) !== upgradeRoute) {
+              try {
+                table.delete(PET_PATH);
+                log("warn", `took over a stale upgrade route ${PET_PATH}`);
+              } catch {
+              }
             }
-            const next = agents.toggleForward(target);
-            writeForwardState(next);
-            hub?.send({ t: "notice", kind: "forward-toggle", text: next ? "\u81EA\u52A8\u9012\u9001\u5DF2\u5F00\u542F" : "\u81EA\u52A8\u9012\u9001\u5DF2\u5173\u95ED" });
-            res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-            res.end(JSON.stringify({ ok: true, forwarding: next }));
-          });
-        }
-      });
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/sessions",
-        handler: (_req, res) => {
-          res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          res.end(JSON.stringify({
-            ok: true,
-            sessions: agents.listSessions(),
-            pinned: agents.isPinned
-          }));
-        }
-      });
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/owner",
-        handler: (req, res) => {
-          if (req.method !== "POST") {
-            res.writeHead(405, { "content-type": "application/json" });
-            res.end(JSON.stringify({ ok: false, error: "use POST" }));
-            return;
-          }
-          let body = "";
-          req.on("data", (chunk) => {
-            body += chunk.toString();
-          });
-          req.on("end", () => {
-            let id;
-            let pin = true;
             try {
-              const parsed = JSON.parse(body);
-              id = parsed.id;
-              if (typeof parsed.pin === "boolean") pin = parsed.pin;
-            } catch {
+              return scoped.webServer.registerUpgrade(upgradeRoute);
+            } catch (err) {
+              log("warn", `upgrade route ${PET_PATH} not claimed: ${err.message}`);
+              return null;
             }
-            if (typeof id !== "string" || !id) {
-              res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-              res.end(JSON.stringify({ ok: false, error: 'body must be {"id":"<session-id>","pin":true|false}' }));
-              return;
+          };
+          let disposeUpgrade = claimUpgrade();
+          const healRoutes = setInterval(() => {
+            if (holdsUpgrade()) return;
+            log("warn", `upgrade route ${PET_PATH} went missing, re-claiming`);
+            disposeUpgrade = claimUpgrade();
+          }, 5e3);
+          healRoutes.unref?.();
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/update",
+            handler: async (req, res) => {
+              if (req.method === "GET") {
+                const cur = currentVersion();
+                res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+                res.end(buildUpdatePage(cur));
+                return;
+              }
+              if (req.method === "POST") {
+                await handleDoUpdate(res);
+                return;
+              }
+              res.writeHead(405, { "content-type": "application/json" });
+              res.end(JSON.stringify({ ok: false, error: "use GET for the UI or POST for the update" }));
             }
-            const moved = pin ? agents.setOwner(id) : agents.forceOwner(id);
-            if (!moved) {
-              res.writeHead(409, { "content-type": "application/json; charset=utf-8" });
-              res.end(JSON.stringify({
-                ok: false,
-                error: "session is not live, is a subagent, or is already the owner",
-                id,
-                pinned: agents.isPinned,
-                owner: agents.ownerSession
-              }));
-              return;
-            }
-            const facts = agents.facts();
-            if (facts && hub && hub.connected) hub.notifyBound(facts);
-            debug("owner-switched", { id, pin, owner: agents.ownerSession });
-            res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-            res.end(JSON.stringify({ ok: true, session: facts?.session ?? id, pinned: agents.isPinned }));
           });
-        }
-      });
-      scoped.webServer.register({
-        kind: "exact",
-        path: "/coopanion/check-update",
-        handler: async (_req, res) => {
-          const result = await checkUpdate();
-          lastCheck = result;
-          if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
-            if (hub?.connected) {
-              hub.send({
-                t: "notice",
-                kind: "update-available",
-                text: `Coopanion Connector \u6709\u65B0\u7248\u672C v${result.latest}\uFF0C\u5F53\u524D v${result.current}\u3002\u8BBF\u95EE /coopanion/update \u67E5\u770B\u3002`
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/do-update",
+            handler: async (_req, res) => {
+              await handleDoUpdate(res);
+            }
+          });
+          async function handleDoUpdate(res) {
+            const result = await performUpdate();
+            res.writeHead(result.ok ? 200 : 500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+            res.end(JSON.stringify(result));
+            if (result.ok) {
+              log("info", `self-updated ${result.from} -> ${result.to}; restart DSH to load new dist/index.cjs`);
+              lastNotifiedVersion = result.to ?? null;
+            } else {
+              log("warn", `self-update failed: ${result.error}`);
+            }
+          }
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/status",
+            handler: (req, res) => {
+              if (capturedHost === null) {
+                capturedHost = typeof req.headers.host === "string" ? req.headers.host : null;
+                if (capturedHost) logLine("listening-address", { host: capturedHost, source: "request-host" });
+              }
+              const facts = agents.facts();
+              res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+              res.end(JSON.stringify({
+                ok: true,
+                v: PROTOCOL_VERSION,
+                pluginVersion: currentVersion(),
+                pet: pet.connected,
+                bound: pet.boundState,
+                route: holdsUpgrade(),
+                pid: process.pid,
+                session: facts?.session ?? null,
+                forwarding: agents.forwarding,
+                updateInfo: lastCheck ? {
+                  hasUpdate: lastCheck.hasUpdate,
+                  current: lastCheck.current,
+                  latest: lastCheck.latest,
+                  releaseUrl: lastCheck.releaseUrl,
+                  releaseName: lastCheck.releaseName,
+                  checkedAt: (/* @__PURE__ */ new Date()).toISOString()
+                } : null,
+                updateUrl: "/coopanion/update"
+              }));
+            }
+          });
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/forward",
+            handler: (req, res) => {
+              if (req.method !== "POST") {
+                res.writeHead(405, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: false, error: "use POST" }));
+                return;
+              }
+              let target;
+              try {
+                if (req.headers["content-length"]) {
+                }
+              } catch {
+              }
+              let body = "";
+              req.on("data", (chunk) => {
+                body += chunk.toString();
+              });
+              req.on("end", () => {
+                try {
+                  if (body) {
+                    const parsed = JSON.parse(body);
+                    if (typeof parsed.on === "boolean") target = parsed.on;
+                  }
+                } catch {
+                }
+                const next = agents.toggleForward(target);
+                writeForwardState(next);
+                hub?.send({ t: "notice", kind: "forward-toggle", text: next ? "\u81EA\u52A8\u9012\u9001\u5DF2\u5F00\u542F" : "\u81EA\u52A8\u9012\u9001\u5DF2\u5173\u95ED" });
+                res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+                res.end(JSON.stringify({ ok: true, forwarding: next }));
               });
             }
-            lastNotifiedVersion = result.latest;
-          }
-          res.writeHead(result.ok ? 200 : 502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-          res.end(JSON.stringify(result));
-        }
-      });
-      let autoTimer = null;
-      const schedule = () => {
-        autoTimer = setTimeout(async () => {
-          try {
-            const result = await checkUpdate();
-            lastCheck = result;
-            if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
-              if (hub?.connected) {
-                hub.send({
-                  t: "notice",
-                  kind: "update-available",
-                  text: `Coopanion Connector \u6709\u65B0\u7248\u672C v${result.latest}\uFF0C\u5F53\u524D v${result.current}\u3002\u8BBF\u95EE /coopanion/update \u67E5\u770B\u66F4\u65B0\u4ECB\u7ECD\u5E76\u66F4\u65B0\u3002`
-                });
-              }
-              lastNotifiedVersion = result.latest;
+          });
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/sessions",
+            handler: (_req, res) => {
+              res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+              res.end(JSON.stringify({
+                ok: true,
+                sessions: agents.listSessions(),
+                pinned: agents.isPinned
+              }));
             }
-          } catch (err) {
-            log("warn", `background update check failed: ${err.message}`);
-          } finally {
-            autoTimer = setTimeout(schedule, AUTO_CHECK_INTERVAL_MS);
+          });
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/owner",
+            handler: (req, res) => {
+              if (req.method !== "POST") {
+                res.writeHead(405, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: false, error: "use POST" }));
+                return;
+              }
+              let body = "";
+              req.on("data", (chunk) => {
+                body += chunk.toString();
+              });
+              req.on("end", () => {
+                let id;
+                let pin = true;
+                try {
+                  const parsed = JSON.parse(body);
+                  id = parsed.id;
+                  if (typeof parsed.pin === "boolean") pin = parsed.pin;
+                } catch {
+                }
+                if (typeof id !== "string" || !id) {
+                  res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+                  res.end(JSON.stringify({ ok: false, error: 'body must be {"id":"<session-id>","pin":true|false}' }));
+                  return;
+                }
+                const moved = pin ? agents.setOwner(id) : agents.forceOwner(id);
+                if (!moved) {
+                  res.writeHead(409, { "content-type": "application/json; charset=utf-8" });
+                  res.end(JSON.stringify({
+                    ok: false,
+                    error: "session is not live, is a subagent, or is already the owner",
+                    id,
+                    pinned: agents.isPinned,
+                    owner: agents.ownerSession
+                  }));
+                  return;
+                }
+                const facts = agents.facts();
+                if (facts && hub && hub.connected) hub.notifyBound(facts);
+                debug("owner-switched", { id, pin, owner: agents.ownerSession });
+                res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+                res.end(JSON.stringify({ ok: true, session: facts?.session ?? id, pinned: agents.isPinned }));
+              });
+            }
+          });
+          scoped.webServer.register({
+            kind: "exact",
+            path: "/coopanion/check-update",
+            handler: async (_req, res) => {
+              const result = await checkUpdate();
+              lastCheck = result;
+              if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
+                if (hub?.connected) {
+                  hub.send({
+                    t: "notice",
+                    kind: "update-available",
+                    text: `Coopanion Connector \u6709\u65B0\u7248\u672C v${result.latest}\uFF0C\u5F53\u524D v${result.current}\u3002\u8BBF\u95EE /coopanion/update \u67E5\u770B\u3002`
+                  });
+                }
+                lastNotifiedVersion = result.latest;
+              }
+              res.writeHead(result.ok ? 200 : 502, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+              res.end(JSON.stringify(result));
+            }
+          });
+          let autoTimer = null;
+          const schedule = () => {
+            autoTimer = setTimeout(async () => {
+              try {
+                const result = await checkUpdate();
+                lastCheck = result;
+                if (result.ok && result.hasUpdate && result.latest !== lastNotifiedVersion) {
+                  if (hub?.connected) {
+                    hub.send({
+                      t: "notice",
+                      kind: "update-available",
+                      text: `Coopanion Connector \u6709\u65B0\u7248\u672C v${result.latest}\uFF0C\u5F53\u524D v${result.current}\u3002\u8BBF\u95EE /coopanion/update \u67E5\u770B\u66F4\u65B0\u4ECB\u7ECD\u5E76\u66F4\u65B0\u3002`
+                    });
+                  }
+                  lastNotifiedVersion = result.latest;
+                }
+              } catch (err) {
+                log("warn", `background update check failed: ${err.message}`);
+              } finally {
+                autoTimer = setTimeout(schedule, AUTO_CHECK_INTERVAL_MS);
+                autoTimer.unref?.();
+              }
+            }, AUTO_CHECK_INITIAL_DELAY_MS);
             autoTimer.unref?.();
-          }
-        }, AUTO_CHECK_INITIAL_DELAY_MS);
-        autoTimer.unref?.();
-      };
-      if (AUTO_CHECK_ENABLED) schedule();
-      scoped.effect(() => () => {
-        clearInterval(healRoutes);
-        disposeUpgrade?.();
-        pet.close();
-        hub = null;
-        if (autoTimer) {
-          clearTimeout(autoTimer);
-          autoTimer = null;
+          };
+          if (AUTO_CHECK_ENABLED) schedule();
+          scoped.effect(() => () => {
+            clearInterval(healRoutes);
+            disposeUpgrade?.();
+            pet.close();
+            hub = null;
+            if (autoTimer) {
+              clearTimeout(autoTimer);
+              autoTimer = null;
+            }
+          });
+          log("info", `bridge listening on ${PET_PATH}`);
+          const listening = probeListeningAddress(scoped.webServer);
+          logLine("routes-registered", { petPath: PET_PATH, address: listening });
+          debug("apply-done", { petPath: PET_PATH, hasWebServer: true });
+          void rescanExistingSessions(scoped, agents, logLine);
+        } catch (err) {
+          logLine("webserver-init-failed", { error: err.message });
         }
       });
-      log("info", `bridge listening on ${PET_PATH}`);
-      debug("apply-done", { petPath: PET_PATH, hasWebServer: true });
-    });
+    } catch (err) {
+      logLine("webserver-missing", { error: err.message });
+    }
     root.effect(() => () => {
       pending.length = 0;
     });
@@ -4835,7 +4941,7 @@ var plugin_default = {
       const agent = payload?.agent;
       const id = agent?.session?.id;
       if (!agent || !id) {
-        debug("agent-created-skipped", {
+        logLine("agent-created-skipped", {
           hasAgent: Boolean(agent),
           sessionId: agent?.session?.id ?? null,
           sessionKeys: agent ? Object.keys(agent) : null,

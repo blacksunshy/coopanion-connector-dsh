@@ -1,8 +1,8 @@
 {
   "name": "coopanion-connector-dsh",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "type": "module",
-  "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it. v0.2.12 lets the pet start a new DSH conversation when none is open, excludes archived sessions from ownership, and self-heals the upgrade route; needs fatfish >= 0.6.12. v0.2.9 fixed CSWSH (issue #6).",
+  "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it. v0.2.13 adds always-on lifecycle logging, rescans already-open sessions at apply time, and reports a missing webServer inject; follows the issue #5 diagnosis. v0.2.9 fixed CSWSH (issue #6).",
   "author": "Pal AI Lab",
   "license": "AGPL-3.0-or-later",
   "repository": {
