@@ -5,7 +5,7 @@
  * makes around it — which Workspace, and how a refusal reads — plus the shape the pet receives.
  */
 import { describe, expect, it } from 'vitest';
-import { createConversation, pickTarget, type WorkspaceLike } from '../src/new-session.ts';
+import { createConversation, pickTarget, resolveWorkspace, type WorkspaceLike } from '../src/new-session.ts';
 
 const project = (id: string, path: string, sessionIds: string[] = []): WorkspaceLike => ({ id, path, sessionIds });
 
@@ -50,7 +50,7 @@ describe('asking DSH for a conversation', () => {
       'session-live',
       null,
     );
-    expect(result).toEqual({ session: 'session-new' });
+    expect(result).toEqual({ session: 'session-new', workspace: '/work/fish' });
     expect(calls).toEqual([{ workspaceId: 'ws-fish' }]);
   });
 
@@ -74,5 +74,58 @@ describe('asking DSH for a conversation', () => {
     expect(await createConversation({ commands: { create: async () => ({ sessionId: 'x' }) } }, [], null, null)).toEqual({
       reason: 'DSH has no workspace to create the conversation in',
     });
+  });
+});
+
+describe('a workspace the pet names', () => {
+  const controller = (calls: Array<Record<string, unknown>>) => ({
+    commands: {
+      create: async (request: Record<string, unknown>) => {
+        calls.push(request);
+        return { sessionId: 'session-new' };
+      },
+    },
+  });
+
+  it('outranks the owner and the last directory seen', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const result = await createConversation(
+      controller(calls),
+      [other, fishPond],
+      'session-live',
+      '/work/other',
+      'ws-other',
+    );
+    expect(calls).toEqual([{ workspaceId: 'ws-other' }]);
+    expect(result).toEqual({ session: 'session-new', workspace: '/work/other' });
+  });
+
+  it('may be a path, not just an id', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    await createConversation(controller(calls), [other, fishPond], null, null, '/work/fish/');
+    expect(calls).toEqual([{ workspaceId: 'ws-fish' }]);
+  });
+
+  it('is refused when nothing matches, rather than quietly falling back', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const result = await createConversation(controller(calls), [other, fishPond], 'session-live', '/work/other', '/work/nowhere');
+    expect(result).toEqual({ reason: 'DSH has no workspace matching "/work/nowhere"; it has: /work/other, /work/fish' });
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('matching the workspace a person named', () => {
+  it('finds one by id or by path', () => {
+    expect(resolveWorkspace([other, fishPond], 'ws-fish')).toBe(fishPond);
+    expect(resolveWorkspace([other, fishPond], '/work/fish')).toBe(fishPond);
+  });
+
+  it('ignores a trailing separator', () => {
+    expect(resolveWorkspace([other, fishPond], '/work/fish/')).toBe(fishPond);
+  });
+
+  it('finds nothing for an empty or unknown name', () => {
+    expect(resolveWorkspace([other, fishPond], '   ')).toBeNull();
+    expect(resolveWorkspace([other, fishPond], '/work/missing')).toBeNull();
   });
 });

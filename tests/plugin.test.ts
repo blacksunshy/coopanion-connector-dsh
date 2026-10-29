@@ -182,9 +182,66 @@ describe('a conversation the pet asks DSH to start', () => {
     send({ t: 'new', id: 'n1' });
     await until(() => frames.some((frame) => frame.t === 'created'));
     expect(requests).toEqual([{ workspaceId: 'ws-1' }]);
-    expect(frames.filter((frame) => frame.t === 'created')).toEqual([{ t: 'created', id: 'n1', session: 'session-new' }]);
+    expect(frames.filter((frame) => frame.t === 'created')).toEqual([
+      { t: 'created', id: 'n1', session: 'session-new', workspace: '/w/session-1' },
+    ]);
     // The pet is told it is bound to the new conversation, not only that it was created.
     expect(frames.filter((frame) => frame.t === 'ready').map((frame) => frame.session)).toEqual(['session-1', 'session-new']);
+  });
+
+  it('lands in the workspace the pet names, not the owner\'s', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const { emit, connect } = await loaded({
+      sessionController: {
+        commands: {
+          create: async (request: Record<string, unknown>) => {
+            requests.push(request);
+            emit('agent/created', { agent: agentOf('session-b') });
+            return { sessionId: 'session-b' };
+          },
+        },
+      },
+      workspaceRegistry: {
+        list: () => [
+          { id: 'ws-a', path: '/w/a', sessionIds: ['session-a'] },
+          { id: 'ws-b', path: '/w/b', sessionIds: [] },
+        ],
+      },
+    });
+    emit('agent/created', { agent: agentOf('session-a') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.length > 0);
+    send({ t: 'new', id: 'n2', workspace: '/w/b' });
+    await until(() => frames.some((frame) => frame.t === 'created'));
+    expect(requests).toEqual([{ workspaceId: 'ws-b' }]);
+    expect(frames.filter((frame) => frame.t === 'created')).toEqual([
+      { t: 'created', id: 'n2', session: 'session-b', workspace: '/w/b' },
+    ]);
+  });
+
+  it('lists the workspaces a new conversation may target', async () => {
+    const { emit, connect } = await loaded({
+      workspaceRegistry: {
+        list: () => [
+          { id: 'ws-a', path: '/w/session-1', sessionIds: ['session-1'] },
+          { id: 'ws-b', path: '/w/b', sessionIds: [] },
+        ],
+      },
+    });
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.length > 0);
+    send({ t: 'list-workspaces' });
+    await until(() => frames.some((frame) => frame.t === 'workspace-list'));
+    expect(frames.find((frame) => frame.t === 'workspace-list')).toEqual({
+      t: 'workspace-list',
+      workspaces: [
+        { id: 'ws-a', path: '/w/session-1', sessions: 1, owner: true },
+        { id: 'ws-b', path: '/w/b', sessions: 0, owner: false },
+      ],
+    });
   });
 
   it('still names the session when the Workspace attach failed after creation', async () => {
