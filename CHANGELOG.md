@@ -8,7 +8,7 @@
 - 已核对产物中不再出现 `Boolean(root.webServer)`；`node scripts/build.mjs` 重建后字节一致（`pnpm run typecheck` 通过、`vitest` 81 passed / 1 skipped）
 - 无功能、协议与桌宠侧契约改动：fatfish 侧原有的会话能力（≥ 0.2.12 新建会话、≥ 0.2.14 指定工作区）行为不变
 - **临时绕过**（暂时不便升级时）：把安装目录 `dist/index.cjs` 里 `logLine("apply-started", { hasWebServer: Boolean(root.webServer) })` 改成 `Boolean(root.get("webServer"))`，重启 DSH 即可
-- 后续防回归：发版前断言产物不含越权访问，或 CI 跑 `pnpm build && git diff --exit-code dist`
+- 后续防回归（已落地）：`pnpm run verify:dist`（即 `node scripts/build.mjs --check`）把源码重新打一遍并与仓库里的 `dist/index.cjs` 逐字节比对，不一致就失败；构建时还会断言产物里没有裸 `root.webServer` 这类越权访问。`prepublishOnly` 也改成了这条校验
 
 ## 0.2.15 — 已发布（GitHub Release）
 

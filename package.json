@@ -36,7 +36,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "prepublishOnly": "node scripts/build.mjs",
+    "verify:dist": "node scripts/build.mjs --check",
+    "prepublishOnly": "node scripts/build.mjs --check",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
