@@ -1,8 +1,8 @@
 {
   "name": "coopanion-connector-dsh",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "type": "module",
-  "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it. v0.2.13 adds always-on lifecycle logging, rescans already-open sessions at apply time, and reports a missing webServer inject; follows the issue #5 diagnosis. v0.2.9 fixed CSWSH (issue #6).",
+  "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports its turns, approvals and replies, and accepts the pet's words into the conversation that owns it. v0.2.14 lets the pet name the workspace a new conversation lands in and list workspaces (PR #9), and fixes apply() dying on cordis' service-property guard before any route mounted (issue #9). v0.2.9 fixed CSWSH (issue #6).",
   "author": "Pal AI Lab",
   "license": "AGPL-3.0-or-later",
   "repository": {

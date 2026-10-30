@@ -329,7 +329,10 @@ export default {
   name: PLUGIN_NAME,
   apply(root: DshContext): void {
     proveLoad();
-    logLine('apply-started', { hasWebServer: Boolean(root.webServer) });
+    // `root.webServer` is a cordis service accessor: reading it without an inject throws and the
+    // whole apply() dies before the try below, taking every registered route with it (issue #9).
+    // `get()` is the safe read — undefined when the Host runs no web console.
+    logLine('apply-started', { hasWebServer: Boolean(root.get('webServer')) });
     const agents = new AgentRegistry();
     // DSH's archive set, read at each ownership decision: an archived Session stays live but every
     // model step proposed for it is rejected, so speaking into one would end as `blocked`.

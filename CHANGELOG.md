@@ -1,5 +1,13 @@
 # 更新说明
 
+## 0.2.14 — 已发布（GitHub Release）
+
+修复 + 功能各一：
+
+- **修复 issue [#9](https://github.com/blacksunshy/coopanion-fatfish/issues/9)（桥故障复盘 2026-10-29）**：`apply()` 开头用 `Boolean(root.webServer)` 探测服务——cordis 里未 inject 的服务属性是会抛错的访问器，异常在 try/catch 之外抛出，整个 `apply()` 中止，所有路由（`/coopanion/pet` 升级、`/coopanion/status` 等）都没注册，而 `cordis.patch.yml` 的 `required: false` 让 DSH 安静地跳过它。改为 `root.get('webServer')` 安全读取，并新增 cordis 行为冒烟测试（服务属性抛错时 `apply()` 必须存活）
+- **新建会话可指定工作区（PR [#9](https://github.com/blacksunshy/coopanion-connector-dsh/pull/9)，致谢 @allisera）**：`new` 帧接受可选 `workspace`（id 或路径，路径做归一化匹配），匹配不上直接拒回并列出可用路径，绝不静默落到别的工作区；`created` 回执带上实际落点 `workspace`，旧桌宠不受影响；新增 `list-workspaces` 帧返回各工作区 id / 路径 / 打开的会话数 / 是否当前
+- 与桌宠侧配对：指定工作区需要 `cortico-world-fatfish ≥ 0.6.14`；旧桌宠 + 新 Host 行为完全不变
+
 ## 0.2.13 — 已发布（GitHub Release）
 
 桌面端可诊断性 + 已有会话补扫（针对 issue #5）：

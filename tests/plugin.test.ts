@@ -156,6 +156,23 @@ describe('the plugin as DSH loads it', () => {
   });
 });
 
+describe('a Host whose context guards its services (issue #9)', () => {
+  it('survives apply() when reading a service property without inject throws, as cordis does', () => {
+    // cordis turns `ctx.webServer` into a throwing accessor until the service is injected; a plain
+    // `Boolean(root.webServer)` in apply() then killed the whole plugin before any route mounted.
+    const ctx: Record<string, unknown> = {
+      inject() { /* the missing webServer never arrives, so cordis never runs the callback */ },
+      effect(callback: () => void | (() => void)) { callback(); },
+      on() { return () => {}; },
+      get() { return undefined; },
+    };
+    Object.defineProperty(ctx, 'webServer', {
+      get() { throw new Error('cannot get property "webServer" without inject'); },
+    });
+    expect(() => (plugin as { apply(ctx: unknown): void }).apply(ctx)).not.toThrow();
+  });
+});
+
 describe('a conversation the pet asks DSH to start', () => {
   it('is created in the owning Workspace and handed to the pet', async () => {
     const requests: Array<Record<string, unknown>> = [];
