@@ -3770,11 +3770,15 @@ function parsePetFrame(raw) {
     case "pick":
       if (typeof frame.session !== "string" || !frame.session) return null;
       return { t: "pick", session: frame.session.slice(0, 128) };
-    case "new":
+    case "new": {
       if (typeof frame.id !== "string" || !frame.id) return null;
-      return { t: "new", id: frame.id.slice(0, 64) };
+      const workspace = typeof frame.workspace === "string" && frame.workspace.trim() ? frame.workspace.trim().slice(0, 512) : void 0;
+      return { t: "new", id: frame.id.slice(0, 64), workspace };
+    }
     case "list-sessions":
       return { t: "list-sessions" };
+    case "list-workspaces":
+      return { t: "list-workspaces" };
     case "unpin":
       return { t: "unpin" };
     default:
@@ -3942,11 +3946,20 @@ var PetHub = class {
           return;
         case "new": {
           const create = this.opts.createSession;
-          const settled = create === void 0 ? Promise.resolve({ reason: "this Host cannot create a conversation" }) : create().catch((err) => ({ reason: `DSH failed to create a conversation: ${err.message}` }));
+          const settled = create === void 0 ? Promise.resolve({ reason: "this Host cannot create a conversation" }) : create(frame.workspace).catch((err) => ({ reason: `DSH failed to create a conversation: ${err.message}` }));
           void settled.then((outcome) => {
             if (ws.readyState !== ws.OPEN) return;
-            ws.send(JSON.stringify("session" in outcome ? { t: "created", id: frame.id, session: outcome.session } : { t: "refused", id: frame.id, reason: outcome.reason }));
+            ws.send(JSON.stringify("session" in outcome ? { t: "created", id: frame.id, session: outcome.session, workspace: outcome.workspace } : { t: "refused", id: frame.id, reason: outcome.reason }));
           });
+          return;
+        }
+        case "list-workspaces": {
+          const workspaces = this.opts.listWorkspaces?.();
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(
+              workspaces ? { t: "workspace-list", workspaces } : { t: "error", text: "this Host does not support listing workspaces" }
+            ));
+          }
           return;
         }
         case "pick": {
@@ -4232,18 +4245,43 @@ function pickTarget(workspaces, ownerSession, knownCwd) {
   if (first) return { workspaceId: first.id };
   return knownCwd === null ? null : { cwd: knownCwd };
 }
-async function createConversation(controller, workspaces, ownerSession, knownCwd) {
+function pathKey(path) {
+  const trimmed = path.trim().replace(/[\\/]+$/, "").replace(/\\/g, "/");
+  return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+}
+function resolveWorkspace(workspaces, requested) {
+  const key = requested.trim();
+  if (!key) return null;
+  const byId = workspaces.find((workspace) => workspace.id === key);
+  if (byId) return byId;
+  const wanted = pathKey(key);
+  return workspaces.find((workspace) => pathKey(workspace.path) === wanted) ?? null;
+}
+async function createConversation(controller, workspaces, ownerSession, knownCwd, requested = null) {
   const create = controller?.commands?.create;
   if (create === void 0) {
     return { reason: "this DSH build has no session controller, so the pet cannot create a conversation" };
   }
-  const target = pickTarget(workspaces, ownerSession, knownCwd);
+  let target;
+  if (requested !== null && requested.trim()) {
+    const hit = resolveWorkspace(workspaces, requested);
+    if (hit === null) {
+      const known = workspaces.map((workspace) => workspace.path).join(", ");
+      return {
+        reason: `DSH has no workspace matching "${requested}"${known ? `; it has: ${known}` : ""}`
+      };
+    }
+    target = { workspaceId: hit.id };
+  } else {
+    target = pickTarget(workspaces, ownerSession, knownCwd);
+  }
   if (target === null) {
     return { reason: "DSH has no workspace to create the conversation in" };
   }
   try {
     const created = await create.call(controller.commands, target);
-    return { session: created.sessionId };
+    const landed = target.workspaceId === void 0 ? void 0 : workspaces.find((workspace) => workspace.id === target.workspaceId);
+    return { session: created.sessionId, workspace: landed?.path ?? target.cwd ?? "" };
   } catch (err) {
     return { reason: `DSH refused to create a conversation: ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -4289,7 +4327,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.13") return "0.2.13";
+  if ("0.2.15") return "0.2.15";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4569,7 +4607,7 @@ var plugin_default = {
   name: PLUGIN_NAME,
   apply(root) {
     proveLoad();
-    logLine("apply-started", { hasWebServer: Boolean(root.webServer) });
+    logLine("apply-started", { hasWebServer: Boolean(root.get("webServer")) });
     const agents = new AgentRegistry();
     agents.setArchivedCheck((id) => {
       const registry = root.get("workspaceRegistry");
@@ -4593,6 +4631,26 @@ var plugin_default = {
     };
     const notify = (frame) => {
       hub?.send(frame);
+    };
+    const workspaceRows = () => {
+      const registry = root.get("workspaceRegistry");
+      const workspaces = registry?.list?.() ?? [];
+      const live = agents.listSessions();
+      const ownerSession = agents.ownerSession;
+      const key = (path) => {
+        const trimmed = path.trim().replace(/[\\/]+$/, "").replace(/\\/g, "/");
+        return process.platform === "win32" ? trimmed.toLowerCase() : trimmed;
+      };
+      return workspaces.map((workspace) => {
+        const ids = new Set(workspace.sessionIds);
+        const open = live.filter((session) => ids.has(session.id) || workspace.path !== "" && session.cwd !== "" && key(session.cwd) === key(workspace.path));
+        return {
+          id: workspace.id,
+          path: workspace.path,
+          sessions: open.length,
+          owner: open.some((session) => session.id === ownerSession)
+        };
+      });
     };
     try {
       root.inject(["webServer"], (scoped) => {
@@ -4644,7 +4702,7 @@ var plugin_default = {
               agents.clearPin();
               return null;
             },
-            createSession: async () => {
+            createSession: async (workspace) => {
               const controller = scoped.get("sessionController");
               const registry = scoped.get("workspaceRegistry");
               const workspaces = registry?.list?.() ?? [];
@@ -4652,12 +4710,13 @@ var plugin_default = {
               if (facts?.cwd) knownCwd = facts.cwd;
               debug("create-session", {
                 hasController: Boolean(controller?.commands?.create),
-                workspaces: workspaces.map((workspace) => workspace.id),
+                workspaces: workspaces.map((entry) => entry.id),
+                requested: workspace ?? null,
                 ownerSession: agents.ownerSession,
                 knownCwd
               });
               const before = agents.ownerSession;
-              const outcome = await createConversation(controller, workspaces, before, knownCwd);
+              const outcome = await createConversation(controller, workspaces, before, knownCwd, workspace ?? null);
               if ("reason" in outcome) {
                 const after = agents.ownerSession;
                 if (after !== null && after !== before) {
@@ -4667,23 +4726,26 @@ var plugin_default = {
               }
               return outcome;
             },
+            listWorkspaces: () => workspaceRows(),
             log
           });
           hub = pet;
           let lastCheck = null;
           let lastNotifiedVersion = null;
-          const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade) };
+          const UPGRADE_OWNER = `coopanion-${Math.random().toString(36).slice(2)}`;
+          const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade), owner: UPGRADE_OWNER };
           const upgradeTable = () => {
             const table = scoped.webServer.upgrades;
             return table instanceof Map ? table : null;
           };
+          const ownsRow = (row) => row?.owner === UPGRADE_OWNER;
           const holdsUpgrade = () => {
             const table = upgradeTable();
-            return table === null ? true : table.get(PET_PATH) === upgradeRoute;
+            return table === null ? true : ownsRow(table.get(PET_PATH));
           };
           const claimUpgrade = () => {
             const table = upgradeTable();
-            if (table !== null && table.has(PET_PATH) && table.get(PET_PATH) !== upgradeRoute) {
+            if (table !== null && table.has(PET_PATH) && !ownsRow(table.get(PET_PATH))) {
               try {
                 table.delete(PET_PATH);
                 log("warn", `took over a stale upgrade route ${PET_PATH}`);

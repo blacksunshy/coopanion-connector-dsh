@@ -1,5 +1,15 @@
 # 更新说明
 
+## 0.2.16 — 修复：发布包里的 `dist` 是旧构建（[#11](https://github.com/blacksunshy/coopanion-connector-dsh/issues/11) / [#12](https://github.com/blacksunshy/coopanion-connector-dsh/issues/12)）
+
+0.2.14 修了 `apply()` 开头「未 inject 就访问 `root.webServer`」导致的崩溃（issue #9），但那次**只推了源码，没有重新构建并提交 `dist/index.cjs`**；0.2.15 又沿用了同一份旧产物。结果是 0.2.14 与 0.2.15 从 GitHub 安装后一启用就在 `apply()` 第一行抛 `cannot get property "webServer" without inject`，所有路由都没注册、`/coopanion/status` 返回 404。issue #11（dsh web）与 #12（桌面端）是同一根因的两种表现。
+
+- **重新构建并提交 `dist/index.cjs`**：产物与源码 `src/plugin.ts` 的 `Boolean(root.get('webServer'))` 同步，从 `github:blacksunshy/coopanion-connector-dsh` 安装后可直接启用
+- 已核对产物中不再出现 `Boolean(root.webServer)`；`node scripts/build.mjs` 重建后字节一致（`pnpm run typecheck` 通过、`vitest` 81 passed / 1 skipped）
+- 无功能、协议与桌宠侧契约改动：fatfish 侧原有的会话能力（≥ 0.2.12 新建会话、≥ 0.2.14 指定工作区）行为不变
+- **临时绕过**（暂时不便升级时）：把安装目录 `dist/index.cjs` 里 `logLine("apply-started", { hasWebServer: Boolean(root.webServer) })` 改成 `Boolean(root.get("webServer"))`，重启 DSH 即可
+- 后续防回归：发版前断言产物不含越权访问，或 CI 跑 `pnpm build && git diff --exit-code dist`
+
 ## 0.2.15 — 已发布（GitHub Release）
 
 修 issue [#8](https://github.com/blacksunshy/coopanion-connector-dsh/issues/8) 评论里指出的第二个回归（0.2.12 起就有，不是 0.2.14 引入的）：
