@@ -14,6 +14,13 @@ describe('a frame from the pet', () => {
     expect(parsePetFrame(JSON.stringify({ t: 'say', id: 'a', text: 'hi', from: '大肥鱼' }))).toEqual({ t: 'say', id: 'a', text: 'hi', from: '大肥鱼' });
     expect(parsePetFrame(JSON.stringify({ t: 'ping' }))).toEqual({ t: 'ping' });
     expect(parsePetFrame(JSON.stringify({ t: 'new', id: 'n1' }))).toEqual({ t: 'new', id: 'n1' });
+    expect(parsePetFrame(JSON.stringify({ t: 'new', id: 'n2', workspace: ' /work/fish ' })))
+      .toEqual({ t: 'new', id: 'n2', workspace: '/work/fish' });
+    expect(parsePetFrame(JSON.stringify({ t: 'list-workspaces' }))).toEqual({ t: 'list-workspaces' });
+  });
+
+  it('treats a blank workspace as no wish at all', () => {
+    expect(parsePetFrame(JSON.stringify({ t: 'new', id: 'n3', workspace: '   ' }))).toEqual({ t: 'new', id: 'n3' });
   });
 
   it('is refused when it is malformed or from another protocol', () => {

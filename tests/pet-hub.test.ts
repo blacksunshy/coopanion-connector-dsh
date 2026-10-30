@@ -270,3 +270,35 @@ describe('a pet that asks for a new conversation', () => {
     expect(await frame).toEqual({ t: 'refused', id: 'n4', reason: 'this Host cannot create a conversation' });
   });
 });
+
+describe('a pet that names the workspace for a new conversation', () => {
+  it('has the name handed to the Host and echoed back with the session', async () => {
+    const createSession = vi.fn(async (workspace?: string) => ({ session: 'session-new', workspace }));
+    const { url } = await listening({ createSession });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'new', id: 'n1', workspace: '/work/fish' }));
+    expect(await frame).toEqual({ t: 'created', id: 'n1', session: 'session-new', workspace: '/work/fish' });
+    expect(createSession).toHaveBeenCalledWith('/work/fish');
+  });
+
+  it('gets the workspaces a new conversation may target', async () => {
+    const listWorkspaces = vi.fn(() => [{ id: 'ws-fish', path: '/work/fish', sessions: 1, owner: true }]);
+    const { url } = await listening({ listWorkspaces });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'list-workspaces' }));
+    expect(await frame).toEqual({
+      t: 'workspace-list',
+      workspaces: [{ id: 'ws-fish', path: '/work/fish', sessions: 1, owner: true }],
+    });
+  });
+
+  it('is told plainly when this Host cannot list workspaces', async () => {
+    const { url } = await listening();
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'list-workspaces' }));
+    expect(await frame).toEqual({ t: 'error', text: 'this Host does not support listing workspaces' });
+  });
+});

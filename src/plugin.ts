@@ -365,6 +365,36 @@ export default {
       hub?.send(frame);
     };
 
+    /**
+     * The projects a `new` may target, with how many conversations each one has open.
+     *
+     * Membership is read the way DSH records it (`sessionIds`), with the directory as a fallback
+     * for conversations that live in a workspace's path without being listed under it. Archived
+     * sessions are already gone from `listSessions`, so a workspace with everything archived shows
+     * zero open and the pet knows it has to create one.
+     */
+    const workspaceRows = (): Array<{ id: string; path: string; sessions: number; owner: boolean }> => {
+      const registry = root.get('workspaceRegistry') as { list?(): WorkspaceLike[] } | undefined;
+      const workspaces = registry?.list?.() ?? [];
+      const live = agents.listSessions();
+      const ownerSession = agents.ownerSession;
+      const key = (path: string): string => {
+        const trimmed = path.trim().replace(/[\\/]+$/, '').replace(/\\/g, '/');
+        return process.platform === 'win32' ? trimmed.toLowerCase() : trimmed;
+      };
+      return workspaces.map((workspace) => {
+        const ids = new Set(workspace.sessionIds);
+        const open = live.filter((session) => ids.has(session.id)
+          || (workspace.path !== '' && session.cwd !== '' && key(session.cwd) === key(workspace.path)));
+        return {
+          id: workspace.id,
+          path: workspace.path,
+          sessions: open.length,
+          owner: open.some((session) => session.id === ownerSession),
+        };
+      });
+    };
+
     // `webServer` is provided by the Host's web console; a Host that runs without one (some
     // desktop entry paths) would make `inject` throw. Catch it so the bridge log records the
     // missing service instead of leaving only the prove-load line behind.
@@ -419,7 +449,7 @@ export default {
           agents.clearPin();
           return null;
         },
-        createSession: async () => {
+        createSession: async (workspace) => {
           // The Session Controller is the same in-process path the settings window's Remote call
           // takes, so a session made here is a first-class one: published in DSH's sidebar and
           // announced as `agent/created`, which is what moves the owner onto it.
@@ -430,12 +460,13 @@ export default {
           if (facts?.cwd) knownCwd = facts.cwd;
           debug('create-session', {
             hasController: Boolean(controller?.commands?.create),
-            workspaces: workspaces.map((workspace) => workspace.id),
+            workspaces: workspaces.map((entry) => entry.id),
+            requested: workspace ?? null,
             ownerSession: agents.ownerSession,
             knownCwd,
           });
           const before = agents.ownerSession;
-          const outcome = await createConversation(controller, workspaces, before, knownCwd);
+          const outcome = await createConversation(controller, workspaces, before, knownCwd, workspace ?? null);
           if ('reason' in outcome) {
             // `create` publishes the Session before it attaches it to a Workspace, so an attach
             // failure leaves a live conversation behind. The pet is bound to it either way; telling
@@ -448,6 +479,7 @@ export default {
           }
           return outcome;
         },
+        listWorkspaces: () => workspaceRows(),
         log,
       });
       hub = pet;

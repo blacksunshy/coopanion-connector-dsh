@@ -37,11 +37,14 @@ export interface PetHubOptions {
   /** The pet asked to drop the pin so auto-follow takes over again; return null when accepted. */
   unpin?(): string | null;
   /**
-   * The pet asked for a new conversation. Resolves the created session's id, or the refusal
-   * reason; the caller owns both the creation and making the result the owner, so the `ready`
-   * frame the pet needs arrives through `notifyBound` like any other owner change.
+   * The pet asked for a new conversation. Resolves the created session's id and the workspace path
+   * it landed in, or the refusal reason; the caller owns both the creation and making the result
+   * the owner, so the `ready` frame the pet needs arrives through `notifyBound` like any other
+   * owner change. `workspace` is the project the pet named, when it named one.
    */
-  createSession?(): Promise<{ session: string } | { reason: string }>;
+  createSession?(workspace?: string): Promise<{ session: string; workspace?: string } | { reason: string }>;
+  /** The pet asked which workspaces a `new` may target; omit when the Host cannot answer. */
+  listWorkspaces?(): Array<{ id: string; path: string; sessions: number; owner: boolean }>;
   log(level: 'info' | 'warn', text: string): void;
   /** The upgrade handler of another server, when the caller owns one (tests, embedding). */
   server?: WebSocketServer;
@@ -173,13 +176,24 @@ export class PetHub {
           const create = this.opts.createSession;
           const settled = create === undefined
             ? Promise.resolve({ reason: 'this Host cannot create a conversation' })
-            : create().catch((err: Error) => ({ reason: `DSH failed to create a conversation: ${err.message}` }));
+            : create(frame.workspace).catch((err: Error) => ({ reason: `DSH failed to create a conversation: ${err.message}` }));
           void settled.then((outcome) => {
             if (ws.readyState !== ws.OPEN) return;
             ws.send(JSON.stringify('session' in outcome
-              ? { t: 'created', id: frame.id, session: outcome.session } satisfies HostFrame
+              ? { t: 'created', id: frame.id, session: outcome.session, workspace: outcome.workspace } satisfies HostFrame
               : { t: 'refused', id: frame.id, reason: outcome.reason } satisfies HostAck));
           });
+          return;
+        }
+        case 'list-workspaces': {
+          const workspaces = this.opts.listWorkspaces?.();
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify(
+              workspaces
+                ? { t: 'workspace-list', workspaces } satisfies HostFrame
+                : { t: 'error', text: 'this Host does not support listing workspaces' } satisfies HostFrame,
+            ));
+          }
           return;
         }
         case 'pick': {

@@ -29,8 +29,14 @@ export type HostFrame =
   | { t: 'question'; text: string }
   /** The turn ended badly. */
   | { t: 'error'; text: string }
-  /** Answers a `new`: the Host created this session and now owns it. */
-  | { t: 'created'; id: string; session: string }
+  /**
+   * Answers a `new`: the Host created this session and now owns it.
+   *
+   * `workspace` is the path of the workspace the conversation actually landed in. A pet that asked
+   * for a specific one must compare: a Host from before this field ignores the request and would
+   * otherwise report success for a conversation started in the wrong project.
+   */
+  | { t: 'created'; id: string; session: string; workspace?: string }
   /**
    * Generic one-shot announcement the Host wants the pet to surface.
    * `kind` groups them (e.g. "update-available") so a pet can pick which to show;
@@ -45,7 +51,12 @@ export type HostFrame =
       pinned: boolean;
     }
   /** Answer to `unpin`: the pin is gone, auto-follow may move the owner again. */
-  | { t: 'unpinned' };
+  | { t: 'unpinned' }
+  /**
+   * Answer to `list-workspaces`: the projects a `new` may target, so the pet can name one instead
+   * of guessing a path. `sessions` counts the ones currently open (archived ones excluded).
+   */
+  | { t: 'workspace-list'; workspaces: Array<{ id: string; path: string; sessions: number; owner: boolean }> };
 
 /** Pet→Host frames. */
 export type PetFrame =
@@ -62,11 +73,17 @@ export type PetFrame =
   /**
    * Start a new conversation on the DSH side and make it the owner, so the pet has somewhere to
    * speak when every session it knew has been archived. `id` is echoed in `created`/`refused`.
+   *
+   * `workspace` names the project the conversation belongs in: a workspace id, or its path (the
+   * form a person is more likely to say out loud). Without it the Host keeps its own preference —
+   * the owning session's workspace, then the last directory it saw, then the first workspace.
    */
-  | { t: 'new'; id: string }
+  | { t: 'new'; id: string; workspace?: string }
   /** Ask for every live session, so the pet can offer an explicit picker (DSH emits no event on
    *  silent tab switches, so auto-follow alone cannot see them). */
   | { t: 'list-sessions' }
+  /** Ask which workspaces a `new` may target, so the pet can offer them instead of guessing a path. */
+  | { t: 'list-workspaces' }
   /** Drop the pin so the Host's own auto-follow picks the owner again. */
   | { t: 'unpin' }
   | { t: 'ping' };
@@ -98,11 +115,17 @@ export function parsePetFrame(raw: string): PetFrame | null {
     case 'pick':
       if (typeof frame.session !== 'string' || !frame.session) return null;
       return { t: 'pick', session: frame.session.slice(0, 128) };
-    case 'new':
+    case 'new': {
       if (typeof frame.id !== 'string' || !frame.id) return null;
-      return { t: 'new', id: frame.id.slice(0, 64) };
+      const workspace = typeof frame.workspace === 'string' && frame.workspace.trim()
+        ? frame.workspace.trim().slice(0, 512)
+        : undefined;
+      return { t: 'new', id: frame.id.slice(0, 64), workspace };
+    }
     case 'list-sessions':
       return { t: 'list-sessions' };
+    case 'list-workspaces':
+      return { t: 'list-workspaces' };
     case 'unpin':
       return { t: 'unpin' };
     default:
