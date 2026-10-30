@@ -1,5 +1,13 @@
 # 更新说明
 
+## 0.2.15 — 已发布（GitHub Release）
+
+修 issue [#8](https://github.com/blacksunshy/coopanion-connector-dsh/issues/8) 评论里指出的第二个回归（0.2.12 起就有，不是 0.2.14 引入的）：
+
+- **升级路由不再每 5 秒误判"丢失"并重新认领**：桌面端 `registerUpgrade` 存的是 `{ ...route, handler: wrapped }`（副本，不是原对象），而 `holdsUpgrade()` 用对象身份比较，永远不相等 → 每 5 秒 2 条 warn（`went missing` + `took over a stale upgrade route`），一天约 3.5 万行。改为在 route 上带一个本实例独有的 `owner` 标记（副本展开时会被一起复制），按标记判断归属；热重载接管陈旧 handler 的能力保留
+- 新增回归测试：模拟宿主存副本的行为，等一个 5s 自检周期后确认没有重复认领
+- 与 0.2.14 一并作为 issue #9 / #8 的完整修复；升级自更新会取 `releases/latest`，停在 0.2.13 的用户重启即可收到本版
+
 ## 0.2.14 — 已发布（GitHub Release）
 
 修复 + 功能各一：

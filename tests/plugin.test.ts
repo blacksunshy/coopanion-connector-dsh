@@ -173,6 +173,40 @@ describe('a Host whose context guards its services (issue #9)', () => {
   });
 });
 
+describe('the upgrade route on a Host that stores copies (issue #8)', () => {
+  it('is not re-claimed on every heal tick when the stored row is a copy', async () => {
+    // Desktop DSH stores `{ ...route, handler: wrapped }`, so an identity comparison saying "not
+    // mine" re-claimed the route every 5s — two warn lines each tick, ~35k lines a day.
+    const rows = new Map<string, unknown>();
+    const claimed: string[] = [];
+    const ctx = {
+      inject(_names: string[], callback: (scoped: unknown) => void) {
+        callback({
+          webServer: {
+            registerUpgrade(route: { path: string; handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void }) {
+              claimed.push(route.path);
+              const wrapped = (req: IncomingMessage, socket: Duplex, head: Buffer): void => route.handler(req, socket, head);
+              rows.set(route.path, { ...route, handler: wrapped });
+              return () => rows.delete(route.path);
+            },
+            register() { return () => {}; },
+          },
+          effect(callback: () => void | (() => void)) { callback(); },
+          get() { return undefined; },
+        });
+      },
+      effect(callback: () => void | (() => void)) { callback(); },
+      on() { return () => {}; },
+      get() { return undefined; },
+    };
+    (plugin as { apply(ctx: unknown): void }).apply(ctx);
+    expect(claimed).toEqual([PET_PATH]);
+    // One heal tick is 5s; a copied row must still read as ours or this turns into every tick.
+    await new Promise((done) => setTimeout(done, 5_400));
+    expect(claimed).toEqual([PET_PATH]);
+  }, 7_000);
+});
+
 describe('a conversation the pet asks DSH to start', () => {
   it('is created in the owning Workspace and handed to the pet', async () => {
     const requests: Array<Record<string, unknown>> = [];

@@ -500,18 +500,23 @@ export default {
        * a silently destroyed socket. So take over a route this instance does not own, and re-claim
        * it if it disappears later.
        */
-      const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade) };
+      // The Host's `registerUpgrade` stores `{ ...route, handler: wrapped }` — a copy, so comparing
+      // object identity always says "not mine" and the heal loop re-claims every 5s (two warn lines
+      // each time; ~35k lines a day, issue #8). A marker copied along with the row tells the truth.
+      const UPGRADE_OWNER = `coopanion-${Math.random().toString(36).slice(2)}`;
+      const upgradeRoute = { path: PET_PATH, handler: allowed(pet.upgrade), owner: UPGRADE_OWNER };
       const upgradeTable = (): Map<string, unknown> | null => {
         const table = (scoped.webServer as { upgrades?: unknown }).upgrades;
         return table instanceof Map ? table : null;
       };
+      const ownsRow = (row: unknown): boolean => (row as { owner?: string } | undefined)?.owner === UPGRADE_OWNER;
       const holdsUpgrade = (): boolean => {
         const table = upgradeTable();
-        return table === null ? true : table.get(PET_PATH) === upgradeRoute;
+        return table === null ? true : ownsRow(table.get(PET_PATH));
       };
       const claimUpgrade = (): (() => void) | null => {
         const table = upgradeTable();
-        if (table !== null && table.has(PET_PATH) && table.get(PET_PATH) !== upgradeRoute) {
+        if (table !== null && table.has(PET_PATH) && !ownsRow(table.get(PET_PATH))) {
           try {
             table.delete(PET_PATH);
             log('warn', `took over a stale upgrade route ${PET_PATH}`);
