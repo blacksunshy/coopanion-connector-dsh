@@ -20,7 +20,7 @@ import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
 import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
 import { readForwardState, writeForwardState } from './forward-state.ts';
-import { argumentNames, assistantText, carriesBridgePrefix, reasonText, type HostFrame } from './protocol.ts';
+import { argumentNames, assistantText, carriesBridgePrefix, questionTextOf, reasonText, type HostFrame } from './protocol.ts';
 import { createConversation, type SessionCommandsLike, type WorkspaceLike } from './new-session.ts';
 import { bridgeLogFiles } from './bridge-log.ts';
 import { checkUpdate, currentVersion, performUpdate, type CheckUpdateResult } from './update.ts';
@@ -353,6 +353,8 @@ export default {
     const pending: HostFrame[] = [];
     /** The last `user/message` DSH appended, used as the template for the pet's own submissions. */
     let userTemplate: unknown = null;
+    /** The `ask_user_question` call the person is still answering; cleared by its own result. */
+    let askCallId: string | null = null;
 
     const log = (level: 'info' | 'warn', text: string): void => {
       try {
@@ -881,6 +883,28 @@ export default {
         if (text) notify({ t: 'reply', turn: Number(data.turn) || 0, text });
         return;
       }
+      // The question the person is answering: send a `question` frame so a pet can remind them
+      // without waking the bot, then close it with `question-end` once the answer comes back.
+      // Only the owning session reaches this block; a subagent's call is never the pet's business.
+      if (event?.type === 'tool/call' && data.name === 'ask_user_question') {
+        const callId = String(data.callId ?? data.toolCallId ?? '');
+        if (callId) {
+          askCallId = callId;
+          notify({ t: 'question', text: questionTextOf(data.arguments), callId });
+          return;
+        }
+      }
+      if (event?.type === 'tool/result' && askCallId !== null) {
+        const resultCallId = String(
+          (data as { toolCallId?: unknown }).toolCallId
+            ?? ((data.message as { toolCallId?: unknown } | undefined)?.toolCallId ?? ''),
+        );
+        if (resultCallId === askCallId) {
+          notify({ t: 'question-end', callId: askCallId });
+          askCallId = null;
+          return;
+        }
+      }
       if (event?.type === 'tool/call') {
         const name = typeof data.name === 'string' ? data.name : 'tool';
         notify({ t: 'tool', name, detail: argumentNames(data.arguments) });
@@ -897,8 +921,15 @@ export default {
       const notice = noticeOf(id, event);
       if (!notice) return;
       const frame = notice.frame as { t: string; turn?: number; reason?: unknown };
-      if (frame.t === 'turn-end') notify({ t: 'turn-end', turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
-      else notify(frame as HostFrame);
+      if (frame.t === 'turn-end') {
+        // A turn that ends while a question is open means the answer path never reported back
+        // (cancelled card, resumed session): stop the reminder instead of leaving it running.
+        if (askCallId !== null) {
+          notify({ t: 'question-end', callId: askCallId });
+          askCallId = null;
+        }
+        notify({ t: 'turn-end', turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
+      } else notify(frame as HostFrame);
     }) as never);
   },
 };

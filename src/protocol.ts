@@ -25,8 +25,10 @@ export type HostFrame =
   | { t: 'tool'; name: string; detail: string }
   /** DSH is waiting for the person to approve a tool call. */
   | { t: 'approval'; name: string; reason: string }
-  /** DSH is waiting for the person to answer a question. */
-  | { t: 'question'; text: string }
+  /** DSH is waiting for the person to answer a question. `callId` keys the matching `question-end`. */
+  | { t: 'question'; text: string; callId?: string }
+  /** The question above was answered, skipped or timed out; stop reminding. */
+  | { t: 'question-end'; callId: string }
   /** The turn ended badly. */
   | { t: 'error'; text: string }
   /**
@@ -182,6 +184,23 @@ export function assistantText(message: unknown): string | null {
  * for the bot to judge whether the call deserves a bubble. Arguments this cannot read as one object
  * of named parameters yield nothing rather than a fragment of their text.
  */
+/** The first question's text from an `ask_user_question` call's argument JSON, or ''. */
+export function questionTextOf(args: unknown): string {
+  if (typeof args !== 'string') return '';
+  let value: unknown;
+  try {
+    value = JSON.parse(args);
+  } catch {
+    return '';
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return '';
+  const questions = (value as { questions?: unknown }).questions;
+  if (!Array.isArray(questions) || questions.length === 0) return '';
+  const first = questions[0] as { question?: unknown };
+  const text = typeof first?.question === 'string' ? first.question.trim() : '';
+  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+}
+
 export function argumentNames(args: unknown): string {
   if (typeof args !== 'string') return '';
   let value: unknown;
