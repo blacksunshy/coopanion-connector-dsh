@@ -1,5 +1,10 @@
 # 更新说明
 
+## 0.2.17 — 未发布
+
+- **选择框提醒的数据通路**：用户在选择框里点选时，桌宠可以只念一句固定短句、不叫醒桌面 AI。为此：`ask_user_question` 一开始调用就发 `question` 帧（`text` = 第一道题的题面，`callId` = 这次调用的 id），结果回来（选中/取消/超时）再发 `question-end` 帧（带同一个 `callId`）。此前 `question` 帧只在协议里声明过，Host 从没发过。
+- 帧是**追加**的：旧桌宠忽略未知的 `question-end`，`question` 仍按原来的通知路径走，行为不变；新桌宠（`cortico-world-fatfish` ≥ 0.6.17）可用它做「请选择」提醒。
+
 ## 0.2.16 — 修复：发布包里的 `dist` 是旧构建（[#11](https://github.com/blacksunshy/coopanion-connector-dsh/issues/11) / [#12](https://github.com/blacksunshy/coopanion-connector-dsh/issues/12)）
 
 0.2.14 修了 `apply()` 开头「未 inject 就访问 `root.webServer`」导致的崩溃（issue #9），但那次**只推了源码，没有重新构建并提交 `dist/index.cjs`**；0.2.15 又沿用了同一份旧产物。结果是 0.2.14 与 0.2.15 从 GitHub 安装后一启用就在 `apply()` 第一行抛 `cannot get property "webServer" without inject`，所有路由都没注册、`/coopanion/status` 返回 404。issue #11（dsh web）与 #12（桌面端）是同一根因的两种表现。

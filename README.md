@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）bundle 插件：Coopanion 桌宠桥接的 Host 半区�
 
 | 方向 | 帧 |
 |---|---|
-| Host → 桌宠 | `ready`、`turn-start`、`turn-end`、`reply`、`tool`、`approval`、`question`、`error`、`created`、`session-list`、`unpinned` |
+| Host → 桌宠 | `ready`、`turn-start`、`turn-end`、`reply`、`tool`、`approval`、`question`、`question-end`、`error`、`created`、`session-list`、`unpinned` |
 | 桌宠 → Host | `hello`、`say`、`pick`、`list-sessions`、`unpin`、`new`、`ping`；Host 对 `say` 回 `accepted` 或 `refused`，对 `new` 回 `created` 或 `refused` |
 
 - 没有桌宠在线时通知直接丢弃、不排队：DSH 的活不等桌宠，重放的回合只会在你已经在控制台读完之后才冒泡。`say` 有回执，桌宠能如实报告"没转交"而不是猜。
