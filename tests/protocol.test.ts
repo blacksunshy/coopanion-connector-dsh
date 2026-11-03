@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '../src/pet-hub.ts';
-import { SAY_MAX, argumentNames, assistantText, carriesBridgePrefix, parsePetFrame, reasonText } from '../src/protocol.ts';
+import { SAY_MAX, argumentNames, assistantText, carriesBridgePrefix, parsePetFrame, questionTextOf, reasonText } from '../src/protocol.ts';
 import { AgentRegistry, isActiveSessionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
 
 describe('a frame from the pet', () => {
@@ -64,6 +64,26 @@ describe('what a tool call tells the pet', () => {
     expect(argumentNames('not json at all')).toBe('');
     expect(argumentNames('["a","b"]')).toBe('');
     expect(argumentNames(undefined)).toBe('');
+  });
+});
+
+describe('what an ask_user_question call tells the pet', () => {
+  it('is the first question\'s text', () => {
+    expect(questionTextOf(JSON.stringify({ questions: [{ question: ' 要用哪个分支？ ' }, { question: '第二个' }] })))
+      .toBe('要用哪个分支？');
+  });
+
+  it('carries nothing when there is no readable question', () => {
+    expect(questionTextOf('not json at all')).toBe('');
+    expect(questionTextOf(JSON.stringify({ questions: [] }))).toBe('');
+    expect(questionTextOf(JSON.stringify({ questions: [{ header: 'x' }] }))).toBe('');
+    expect(questionTextOf(undefined)).toBe('');
+  });
+
+  it('keeps a long question to one bubble', () => {
+    const text = questionTextOf(JSON.stringify({ questions: [{ question: '问'.repeat(300) }] }));
+    expect(text.length).toBe(201);
+    expect(text.endsWith('…')).toBe(true);
   });
 });
 

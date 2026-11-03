@@ -176,14 +176,6 @@ export function assistantText(message: unknown): string | null {
   return text.length > REPLY_MAX ? `${text.slice(0, REPLY_MAX)}…` : text;
 }
 
-/**
- * The parameter names of one tool call, and never their values.
- *
- * A call can carry a secret — a token, a password, a signing key — and what reaches the pet reaches
- * a model's context and a stored event stream, where it cannot be taken back. The names are enough
- * for the bot to judge whether the call deserves a bubble. Arguments this cannot read as one object
- * of named parameters yield nothing rather than a fragment of their text.
- */
 /** The first question's text from an `ask_user_question` call's argument JSON, or ''. */
 export function questionTextOf(args: unknown): string {
   if (typeof args !== 'string') return '';
@@ -201,6 +193,14 @@ export function questionTextOf(args: unknown): string {
   return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 
+/**
+ * The parameter names of one tool call, and never their values.
+ *
+ * A call can carry a secret — a token, a password, a signing key — and what reaches the pet reaches
+ * a model's context and a stored event stream, where it cannot be taken back. The names are enough
+ * for the bot to judge whether the call deserves a bubble. Arguments this cannot read as one object
+ * of named parameters yield nothing rather than a fragment of their text.
+ */
 export function argumentNames(args: unknown): string {
   if (typeof args !== 'string') return '';
   let value: unknown;

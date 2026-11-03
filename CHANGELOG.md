@@ -1,9 +1,11 @@
 # 更新说明
 
-## 0.2.17 — 未发布
+## 0.2.17 — 已发布（GitHub Release）
 
-- **选择框提醒的数据通路**：用户在选择框里点选时，桌宠可以只念一句固定短句、不叫醒桌面 AI。为此：`ask_user_question` 一开始调用就发 `question` 帧（`text` = 第一道题的题面，`callId` = 这次调用的 id），结果回来（选中/取消/超时）再发 `question-end` 帧（带同一个 `callId`）。此前 `question` 帧只在协议里声明过，Host 从没发过。
-- 帧是**追加**的：旧桌宠忽略未知的 `question-end`，`question` 仍按原来的通知路径走，行为不变；新桌宠（`cortico-world-fatfish` ≥ 0.6.17）可用它做「请选择」提醒。
+- **修复 issue [#13](https://github.com/blacksunshy/coopanion-connector-dsh/issues/13)：DSH 0.2.1-rc.5 上发现不到已经打开的会话**：新版本的 `sessionController.agents` 是 `ApiSessionAgentController` 实例（不是 Map、也不是数组），唯一入口 `resolveAgent(sessionId)` 返回 **Promise**，而启动补扫原本全是同步探测，于是日志停在 `rescan-existing { sessionIds: 2, registered: 0 }`，桌宠收不到 `ready`。补扫增加异步探测分支（`await agents.resolveAgent(id)`，兼容 `{ agent }` 与直接返回 agent 两种形状），并在桌宠 `hello` 时若仍无 owner 再补扫一次；扫到 owner 立刻 `notifyBound`，桌宠不需要重连
+- **选择框提醒的数据通路（PR [#14](https://github.com/blacksunshy/coopanion-connector-dsh/pull/14)，致谢 @ink1453）**：用户在选择框里点选时，桌宠可以只念一句固定短句、不叫醒桌面 AI。为此：`ask_user_question` 一开始调用就发 `question` 帧（`text` = 第一道题的题面，`callId` = 这次调用的 id），结果回来（选中/取消/超时）再发 `question-end` 帧（带同一个 `callId`）。此前 `question` 帧只在协议里声明过，Host 从没发过；`turn-end` 时若问句还开着也会补一次 `question-end`，避免提醒一直响
+- 帧是**追加**的：旧桌宠忽略未知的 `question-end`，`question` 仍按原来的通知路径走，行为不变；新桌宠（`cortico-world-fatfish` ≥ 0.6.17）可用它做「请选择」提醒
+- 测试：新增 `resolveAgent` 异步路径（含 `{ agent }` 包装与直接返回两种形状）、`question` / `question-end` 帧（含 `turn-end` 兜底）、`questionTextOf` 边界；`tsc --noEmit` 通过，`vitest` 88 passed / 1 skipped
 
 ## 0.2.16 — 修复：发布包里的 `dist` 是旧构建（[#11](https://github.com/blacksunshy/coopanion-connector-dsh/issues/11) / [#12](https://github.com/blacksunshy/coopanion-connector-dsh/issues/12)）
 

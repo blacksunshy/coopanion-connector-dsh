@@ -3805,6 +3805,21 @@ function assistantText(message) {
   const text = parts.join("\n\n");
   return text.length > REPLY_MAX ? `${text.slice(0, REPLY_MAX)}\u2026` : text;
 }
+function questionTextOf(args) {
+  if (typeof args !== "string") return "";
+  let value;
+  try {
+    value = JSON.parse(args);
+  } catch {
+    return "";
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "";
+  const questions = value.questions;
+  if (!Array.isArray(questions) || questions.length === 0) return "";
+  const first = questions[0];
+  const text = typeof first?.question === "string" ? first.question.trim() : "";
+  return text.length > 200 ? `${text.slice(0, 200)}\u2026` : text;
+}
 function argumentNames(args) {
   if (typeof args !== "string") return "";
   let value;
@@ -4327,7 +4342,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.16") return "0.2.16";
+  if ("0.2.17") return "0.2.17";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4550,8 +4565,15 @@ async function rescanExistingSessions(scoped, agents, log) {
       }
     } catch {
     }
+    const registered = /* @__PURE__ */ new Set();
+    const register = (id, candidate) => {
+      const a = candidate;
+      if (!a || typeof a.followup !== "function" || !a.session?.id) return false;
+      agents.add(String(a.session.id), a);
+      registered.add(id);
+      return true;
+    };
     const getters = ["get", "agent", "getAgent", "session", "getSession"];
-    let obtained = 0;
     for (const id of ids) {
       let agent = void 0;
       for (const name of getters) {
@@ -4577,28 +4599,42 @@ async function rescanExistingSessions(scoped, agents, log) {
           }
         }
       }
-      const a = agent;
-      if (a && typeof a.followup === "function" && a.session?.id) {
-        agents.add(String(a.session.id), a);
-        obtained++;
-      }
+      register(id, agent);
     }
     for (const coll of ["agents", "sessions", "list", "listSessions"]) {
       const c = controller?.[coll];
       const items = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
       for (const item of items) {
-        const a = item;
-        if (a && typeof a.followup === "function" && a.session?.id) {
-          const sid = String(a.session.id);
-          if (!ids.has(sid)) {
-            ids.add(sid);
-            obtained++;
+        const sid = String(item?.session?.id ?? "");
+        if (sid) register(sid, item);
+      }
+    }
+    let fromAsync = 0;
+    let holder;
+    try {
+      holder = controller?.agents;
+    } catch {
+      holder = void 0;
+    }
+    if (holder && !(holder instanceof Map) && !Array.isArray(holder)) {
+      for (const id of ids) {
+        if (registered.has(id)) continue;
+        for (const name of ["resolveAgent", "get", "getAgent"]) {
+          const fn = holder[name];
+          if (typeof fn !== "function") continue;
+          try {
+            const found = await fn.call(holder, id);
+            const unwrapped = found?.agent ?? found;
+            if (register(id, unwrapped)) {
+              fromAsync++;
+              break;
+            }
+          } catch {
           }
-          agents.add(sid, a);
         }
       }
     }
-    log("rescan-existing", { sessionIds: ids.size, registered: obtained });
+    log("rescan-existing", { sessionIds: ids.size, registered: registered.size, fromAsync });
   } catch (err) {
     log("rescan-existing-failed", { error: err.message });
   }
@@ -4622,6 +4658,7 @@ var plugin_default = {
     let hub = null;
     const pending = [];
     let userTemplate = null;
+    let askCallId = null;
     const log = (level, text) => {
       try {
         if (level === "warn") root.logger?.warn(`[${PLUGIN_NAME}] ${text}`);
@@ -4655,6 +4692,17 @@ var plugin_default = {
     try {
       root.inject(["webServer"], (scoped) => {
         try {
+          let rescanning = null;
+          const rescan = () => {
+            if (rescanning) return rescanning;
+            rescanning = rescanExistingSessions(scoped, agents, logLine).then(() => {
+              const facts = agents.facts();
+              if (facts && hub?.connected) hub.notifyBound(facts);
+            }).finally(() => {
+              rescanning = null;
+            });
+            return rescanning;
+          };
           const pet = new PetHub({
             welcome: () => {
               const facts = agents.facts();
@@ -4664,6 +4712,7 @@ var plugin_default = {
                   ownerSession: agents.ownerSession,
                   isPinned: agents.isPinned
                 });
+                void rescan();
                 return null;
               }
               knownCwd = facts.cwd || knownCwd;
@@ -4988,7 +5037,7 @@ var plugin_default = {
           const listening = probeListeningAddress(scoped.webServer);
           logLine("routes-registered", { petPath: PET_PATH, address: listening });
           debug("apply-done", { petPath: PET_PATH, hasWebServer: true });
-          void rescanExistingSessions(scoped, agents, logLine);
+          void rescan();
         } catch (err) {
           logLine("webserver-init-failed", { error: err.message });
         }
@@ -5064,6 +5113,24 @@ var plugin_default = {
         if (text) notify({ t: "reply", turn: Number(data.turn) || 0, text });
         return;
       }
+      if (event?.type === "tool/call" && data.name === "ask_user_question") {
+        const callId = String(data.callId ?? data.toolCallId ?? "");
+        if (callId) {
+          askCallId = callId;
+          notify({ t: "question", text: questionTextOf(data.arguments), callId });
+          return;
+        }
+      }
+      if (event?.type === "tool/result" && askCallId !== null) {
+        const resultCallId = String(
+          data.toolCallId ?? (data.message?.toolCallId ?? "")
+        );
+        if (resultCallId === askCallId) {
+          notify({ t: "question-end", callId: askCallId });
+          askCallId = null;
+          return;
+        }
+      }
       if (event?.type === "tool/call") {
         const name = typeof data.name === "string" ? data.name : "tool";
         notify({ t: "tool", name, detail: argumentNames(data.arguments) });
@@ -5080,8 +5147,13 @@ var plugin_default = {
       const notice = noticeOf(id, event);
       if (!notice) return;
       const frame = notice.frame;
-      if (frame.t === "turn-end") notify({ t: "turn-end", turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
-      else notify(frame);
+      if (frame.t === "turn-end") {
+        if (askCallId !== null) {
+          notify({ t: "question-end", callId: askCallId });
+          askCallId = null;
+        }
+        notify({ t: "turn-end", turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
+      } else notify(frame);
     }));
   }
 };

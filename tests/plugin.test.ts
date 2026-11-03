@@ -338,6 +338,90 @@ describe('a conversation the pet asks DSH to start', () => {
   });
 });
 
+describe('sessions the Host opened before this plugin loaded (issue #13)', () => {
+  it('registers a session whose agent is only reachable through an async resolveAgent', async () => {
+    // 0.2.1-rc.5 exposes `sessionController.agents` as an ApiSessionAgentController: not a Map, not
+    // an array, with `resolveAgent(id)` answering a Promise. The synchronous probes all missed it,
+    // leaving `rescan-existing { sessionIds: 2, registered: 0 }` and a pet that never connects.
+    const resolveAgent = async (id: string): Promise<unknown> => {
+      await new Promise((done) => setTimeout(done, 150));
+      return id === 'session-1' ? { agent: agentOf(id) } : undefined;
+    };
+    const { connect } = await loaded({
+      sessionController: { agents: { resolveAgent } },
+      workspaceRegistry: { list: () => [{ id: 'ws-1', path: '/w/session-1', sessionIds: ['session-1'] }] },
+    });
+    const { socket, frames } = await connect();
+    socket.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' }));
+    // No conversation was known when the pet greeted, so this `ready` can only come from the
+    // rescan that the greeting started.
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    expect(frames.find((frame) => frame.t === 'ready')).toMatchObject({ session: 'session-1' });
+  });
+
+  it('accepts an agent returned directly, not wrapped in { agent }', async () => {
+    const { connect } = await loaded({
+      sessionController: {
+        agents: {
+          resolveAgent: async (id: string) => (id === 'session-2' ? agentOf(id) : undefined),
+        },
+      },
+      workspaceRegistry: { list: () => [{ id: 'ws-2', path: '/w/session-2', sessionIds: ['session-2'] }] },
+    });
+    const { socket, frames } = await connect();
+    socket.send(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' }));
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    expect(frames.find((frame) => frame.t === 'ready')).toMatchObject({ session: 'session-2' });
+  });
+});
+
+describe('a question the assistant asks', () => {
+  it('becomes a question frame, closed when the answer lands', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+
+    emit('session/event', { id: 'session-1' }, {
+      type: 'tool/call',
+      data: {
+        name: 'ask_user_question',
+        callId: 'c1',
+        arguments: JSON.stringify({ questions: [{ question: '要用哪个分支？' }] }),
+      },
+    });
+    await until(() => frames.some((frame) => frame.t === 'question'));
+    expect(frames.find((frame) => frame.t === 'question')).toEqual({
+      t: 'question',
+      text: '要用哪个分支？',
+      callId: 'c1',
+    });
+
+    emit('session/event', { id: 'session-1' }, { type: 'tool/result', data: { toolCallId: 'c1' } });
+    await until(() => frames.some((frame) => frame.t === 'question-end'));
+    expect(frames.find((frame) => frame.t === 'question-end')).toEqual({ t: 'question-end', callId: 'c1' });
+  });
+
+  it('closes an unanswered question when the turn ends', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+
+    emit('session/event', { id: 'session-1' }, {
+      type: 'tool/call',
+      data: { name: 'ask_user_question', callId: 'c2', arguments: JSON.stringify({ questions: [{ question: '继续吗？' }] }) },
+    });
+    await until(() => frames.some((frame) => frame.t === 'question'));
+    // The person closed the card instead of answering: no `tool/result` will arrive.
+    emit('session/event', { id: 'session-1' }, { type: 'turn/end', data: { turn: 1, reason: 'cancelled' } });
+    await until(() => frames.some((frame) => frame.t === 'question-end'));
+    expect(frames.find((frame) => frame.t === 'question-end')).toEqual({ t: 'question-end', callId: 'c2' });
+  });
+});
+
 describe('a line from the pet', () => {
   // Not covered yet: the success path through `agent/created` → `followup` does not register the
   // agent under this fake context, and the cause is not yet known. Everything the path is built

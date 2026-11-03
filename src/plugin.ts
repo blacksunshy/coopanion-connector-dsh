@@ -277,8 +277,16 @@ async function rescanExistingSessions(
     } catch { /* registry shape unknown */ }
 
     // 2. Try to obtain an agent object per id from whatever the controller exposes.
+    const registered = new Set<string>();
+    /** Registers one candidate; false when it cannot be spoken into or carries no session id. */
+    const register = (id: string, candidate: unknown): boolean => {
+      const a = candidate as { followup?: unknown; session?: { id?: string } } | undefined;
+      if (!a || typeof a.followup !== 'function' || !a.session?.id) return false;
+      agents.add(String(a.session.id), a as never);
+      registered.add(id);
+      return true;
+    };
     const getters = ['get', 'agent', 'getAgent', 'session', 'getSession'] as const;
-    let obtained = 0;
     for (const id of ids) {
       let agent: unknown = undefined;
       for (const name of getters) {
@@ -298,11 +306,7 @@ async function rescanExistingSessions(
           }
         }
       }
-      const a = agent as { followup?: unknown; session?: { id?: string; header?: { cwd?: string } } } | undefined;
-      if (a && typeof a.followup === 'function' && a.session?.id) {
-        agents.add(String(a.session.id), a as never);
-        obtained++;
-      }
+      register(id, agent);
     }
 
     // 3. If the controller exposes a flat list of agents directly, register those too.
@@ -310,16 +314,34 @@ async function rescanExistingSessions(
       const c = (controller as AnyObj | undefined)?.[coll];
       const items: unknown[] = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
       for (const item of items) {
-        const a = item as { followup?: unknown; session?: { id?: string } } | undefined;
-        if (a && typeof a.followup === 'function' && a.session?.id) {
-          const sid = String(a.session.id);
-          if (!ids.has(sid)) { ids.add(sid); obtained++; }
-          agents.add(sid, a as never);
+        const sid = String((item as { session?: { id?: string } })?.session?.id ?? '');
+        if (sid) register(sid, item);
+      }
+    }
+
+    // 4. Async entry points. On DSH 0.2.1-rc.5 `controller.agents` is an ApiSessionAgentController
+    //    whose `resolveAgent(id)` answers a Promise, which every synchronous probe above misses: the
+    //    reported symptom was `sessionIds: 2, registered: 0` even though the sessions were open.
+    let fromAsync = 0;
+    let holder: AnyObj | undefined;
+    try { holder = (controller as AnyObj | undefined)?.agents as AnyObj | undefined; } catch { holder = undefined; }
+    if (holder && !(holder instanceof Map) && !Array.isArray(holder)) {
+      for (const id of ids) {
+        if (registered.has(id)) continue;
+        for (const name of ['resolveAgent', 'get', 'getAgent'] as const) {
+          const fn = holder[name];
+          if (typeof fn !== 'function') continue;
+          try {
+            const found = await (fn as (id: string) => unknown).call(holder, id);
+            // `resolveAgent` may answer `{ agent }`; a plain agent is accepted too.
+            const unwrapped = (found as { agent?: unknown } | null)?.agent ?? found;
+            if (register(id, unwrapped)) { fromAsync++; break; }
+          } catch { /* try the next entry point */ }
         }
       }
     }
 
-    log('rescan-existing', { sessionIds: ids.size, registered: obtained });
+    log('rescan-existing', { sessionIds: ids.size, registered: registered.size, fromAsync });
   } catch (err) {
     log('rescan-existing-failed', { error: (err as Error).message });
   }
@@ -406,6 +428,21 @@ export default {
     try {
     root.inject(['webServer'], (scoped) => {
       try {
+      // One rescan at a time. DSH desktop hosts do not always re-emit `agent/created` for sessions
+      // opened before the plugin loaded, so the registry is topped up at start and again whenever a
+      // pet connects with no owner yet (issue #13). A rescan that finds an owner notifies the pet,
+      // which is exactly the `ready` frame it is waiting for.
+      let rescanning: Promise<void> | null = null;
+      const rescan = (): Promise<void> => {
+        if (rescanning) return rescanning;
+        rescanning = rescanExistingSessions(scoped, agents, logLine)
+          .then(() => {
+            const facts = agents.facts();
+            if (facts && hub?.connected) hub.notifyBound(facts);
+          })
+          .finally(() => { rescanning = null; });
+        return rescanning;
+      };
       const pet = new PetHub({
         welcome: () => {
           const facts = agents.facts();
@@ -415,6 +452,8 @@ export default {
               ownerSession: agents.ownerSession,
               isPinned: agents.isPinned,
             });
+            // The pet is waiting: look again for sessions the Host opened before this plugin loaded.
+            void rescan();
             return null;
           }
           knownCwd = facts.cwd || knownCwd;
@@ -789,7 +828,7 @@ export default {
       // desktop hosts, which leaves the registry empty and the pet stuck on "no conversation".
       // Probe the Session Controller for whatever enumeration DSH exposes and register the ones
       // we can actually speak into. This is best-effort: an unknown shape is a no-op.
-      void rescanExistingSessions(scoped, agents, logLine);
+      void rescan();
       } catch (err) {
         // Log but do not rethrow: a partial route registration is better than taking the whole
         // plugin (and the Host's activation) down. The `webserver-init-failed` line is the trace.
