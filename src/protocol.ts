@@ -18,7 +18,7 @@ export type HostFrame =
   /** A turn began: the pet switches to its working face. */
   | { t: 'turn-start'; turn: number }
   /** A turn ended. `reason` is DSH's own wording for why. */
-  | { t: 'turn-end'; turn: number; reason: string }
+  | { t: 'turn-end'; turn: number; reason: string; used?: number; size?: number }
   /** One finished reply of the assistant, already rendered to plain text. */
   | { t: 'reply'; turn: number; text: string }
   /** A tool the assistant began calling; `detail` names its parameters, never their values. */
