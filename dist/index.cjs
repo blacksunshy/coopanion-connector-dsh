@@ -5152,7 +5152,12 @@ var plugin_default = {
           notify({ t: "question-end", callId: askCallId });
           askCallId = null;
         }
-        notify({ t: "turn-end", turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
+        notify({
+          t: "turn-end",
+          turn: frame.turn ?? 0,
+          reason: reasonText(frame.reason),
+          ...occupancyOf(root, agents.liveGet(id))
+        });
       } else notify(frame);
     }));
   }
@@ -5315,6 +5320,20 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>`;
+}
+function occupancyOf(host, agent) {
+  const meter = host.get("tokenMeter");
+  const session = agent?.session;
+  const size = session?.requestContext?.()?.contextWindow;
+  if (!meter?.measure || !session) return {};
+  let used;
+  try {
+    used = meter.measure(session).totalTokens;
+  } catch {
+    return {};
+  }
+  if (typeof used !== "number" || !Number.isFinite(used) || typeof size !== "number" || !Number.isFinite(size) || size <= 0) return {};
+  return { used, size };
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

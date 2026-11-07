@@ -1,4 +1,4 @@
-/**
+﻿/**
  * The bridge's Host half: a DSH bundle plugin that gives the Coopanion pet one local WebSocket,
  * tells it what DSH is doing, and submits the pet's words to the conversation that owns it.
  *
@@ -967,7 +967,10 @@ export default {
           notify({ t: 'question-end', callId: askCallId });
           askCallId = null;
         }
-        notify({ t: 'turn-end', turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
+        notify({
+          t: 'turn-end', turn: frame.turn ?? 0, reason: reasonText(frame.reason),
+          ...occupancyOf(root, agents.liveGet(id)),
+        });
       } else notify(frame as HostFrame);
     }) as never);
   },
@@ -1159,3 +1162,15 @@ window.addEventListener('DOMContentLoaded', () => {
 </html>`;
 }
 
+
+/** How much of the routed model's context one session has spent, when DSH can say both numbers. */
+function occupancyOf(host: { get(name: string): unknown }, agent: unknown): { used?: number; size?: number } {
+  const meter = host.get('tokenMeter') as { measure?: (session: unknown) => { totalTokens?: number } } | undefined;
+  const session = (agent as { session?: { requestContext?(): { contextWindow?: number } | undefined } } | null)?.session;
+  const size = session?.requestContext?.()?.contextWindow;
+  if (!meter?.measure || !session) return {};
+  let used: number | undefined;
+  try { used = meter.measure(session).totalTokens; } catch { return {}; }
+  if (typeof used !== 'number' || !Number.isFinite(used) || typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return {};
+  return { used, size };
+}
