@@ -33,7 +33,12 @@ interface SessionHeader {
 
 /** One live agent, as much of it as this plugin touches. */
 export interface LiveAgent {
-  session: { id?: string; header?: SessionHeader };
+  session: {
+    id?: string;
+    header?: SessionHeader;
+    /** The routed model's capacity, when DSH exposes one for this session. */
+    requestContext?(): { contextWindow?: number } | undefined;
+  };
   /** Submits context and wakes the agent; resolves once the message is queued. */
   followup?(message: unknown): void;
   /** Submits context without waking the agent. */

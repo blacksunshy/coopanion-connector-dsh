@@ -101,6 +101,48 @@ function proveLoad(): void {
 }
 
 /**
+ * Socket-level errors that the Host's own HTTP/WS upgrade handler can leave without a listener on
+ * Windows: an `ECONNRESET` that arrives after the socket's `close` has already removed the Host's
+ * `error` listener bubbles up as an uncaught exception, and `dsh-app-boot` treats every uncaught
+ * exception as fatal (issue #17). These errors are never the pet's fault — they are a peer resetting
+ * a loopback connection during connect/reconnect — so swallowing them keeps the Host alive while
+ * leaving real bugs (anything else) to crash loudly, exactly as before.
+ *
+ * Implemented with `setUncaughtExceptionCaptureCallback`, which runs INSTEAD of the Host's plain
+ * `uncaughtException` listener: a non-socket error is re-thrown, so the default crash (and its
+ * stack) still happens. If the Host already installed a capture callback we leave it alone and fall
+ * back to a best-effort listener that only logs.
+ */
+const SOCKET_ERROR_CODES = new Set([
+  'ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE',
+]);
+function installSocketErrorGuard(logger: (line: string) => unknown): void {
+  const report = (line: string): void => {
+    try { logger(line); } catch { /* logger may not be ready */ }
+  };
+  if (typeof (process as { setUncaughtExceptionCaptureCallback?: unknown }).setUncaughtExceptionCaptureCallback !== 'function') return;
+  try {
+    (process as { setUncaughtExceptionCaptureCallback(cb: (err: Error) => void): void }).setUncaughtExceptionCaptureCallback((err: Error) => {
+      const code = (err as { code?: string } | null)?.code;
+      if (code && SOCKET_ERROR_CODES.has(code)) {
+        report(`[coopanion-connector-dsh] swallowed socket error (kept Host alive): ${err.message}`);
+        return;
+      }
+      // Anything else is a real bug: re-throw so the process still crashes with the original stack.
+      throw err;
+    });
+  } catch {
+    // The Host already owns the capture callback; best we can do is log socket errors plainly.
+    process.on('uncaughtException', (err: Error) => {
+      const code = (err as { code?: string } | null)?.code;
+      if (code && SOCKET_ERROR_CODES.has(code)) {
+        report(`[coopanion-connector-dsh] socket error reached uncaughtException: ${err.message} (Host will still exit)`);
+      }
+    });
+  }
+}
+
+/**
  * A structured debug line, appended to the same jsonl as `proveLoad`.
  *
  * Opt in with `DEBUG_BRIDGE=1` (any truthy value). All normal operations keep silent; this is
@@ -351,6 +393,10 @@ export default {
   name: PLUGIN_NAME,
   apply(root: DshContext): void {
     proveLoad();
+    installSocketErrorGuard((line) => {
+      const logger = root.get('logger') as { warn?(m: string): void } | undefined;
+      logger?.warn?.(line);
+    });
     // `root.webServer` is a cordis service accessor: reading it without an inject throws and the
     // whole apply() dies before the try below, taking every registered route with it (issue #9).
     // `get()` is the safe read — undefined when the Host runs no web console.
@@ -967,7 +1013,10 @@ export default {
           notify({ t: 'question-end', callId: askCallId });
           askCallId = null;
         }
-        notify({ t: 'turn-end', turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
+        notify({
+          t: 'turn-end', turn: frame.turn ?? 0, reason: reasonText(frame.reason),
+          ...occupancyOf(root, agents.liveGet(id)),
+        });
       } else notify(frame as HostFrame);
     }) as never);
   },
@@ -1157,5 +1206,23 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>`;
+}
+
+/**
+ * How much of the routed model's context one session has spent, when DSH can say both numbers.
+ * Returns `{ used, size }` only when both are finite numbers and `size` is positive; otherwise an
+ * empty object so the consumer keeps its old behaviour (no usage figure, no handover). Every access
+ * is guarded: DSH's `tokenMeter` service and `session.requestContext()` are not part of this
+ * plugin's typed surface, and a missing or reshaped API must never break the turn-end frame.
+ */
+function occupancyOf(host: { get(name: string): unknown }, agent: unknown): { used?: number; size?: number } {
+  const meter = host.get('tokenMeter') as { measure?: (session: unknown) => { totalTokens?: number } } | undefined;
+  const session = (agent as { session?: { requestContext?(): { contextWindow?: number } | undefined } } | null)?.session;
+  const size = session?.requestContext?.()?.contextWindow;
+  if (!meter?.measure || !session) return {};
+  let used: number | undefined;
+  try { used = meter.measure(session).totalTokens; } catch { return {}; }
+  if (typeof used !== 'number' || !Number.isFinite(used) || typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return {};
+  return { used, size };
 }
 

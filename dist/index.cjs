@@ -4470,6 +4470,38 @@ function proveLoad() {
     }
   }
 }
+var SOCKET_ERROR_CODES = /* @__PURE__ */ new Set([
+  "ECONNRESET",
+  "EPIPE",
+  "ECONNABORTED",
+  "ERR_STREAM_PREMATURE_CLOSE"
+]);
+function installSocketErrorGuard(logger) {
+  const report = (line) => {
+    try {
+      logger(line);
+    } catch {
+    }
+  };
+  if (typeof process.setUncaughtExceptionCaptureCallback !== "function") return;
+  try {
+    process.setUncaughtExceptionCaptureCallback((err) => {
+      const code = err?.code;
+      if (code && SOCKET_ERROR_CODES.has(code)) {
+        report(`[coopanion-connector-dsh] swallowed socket error (kept Host alive): ${err.message}`);
+        return;
+      }
+      throw err;
+    });
+  } catch {
+    process.on("uncaughtException", (err) => {
+      const code = err?.code;
+      if (code && SOCKET_ERROR_CODES.has(code)) {
+        report(`[coopanion-connector-dsh] socket error reached uncaughtException: ${err.message} (Host will still exit)`);
+      }
+    });
+  }
+}
 var DEBUG_BRIDGE = Boolean(process.env.DEBUG_BRIDGE) || process.env.DEBUG_BRIDGE === "1";
 function debug(tag, detail) {
   if (!DEBUG_BRIDGE) return;
@@ -4643,6 +4675,10 @@ var plugin_default = {
   name: PLUGIN_NAME,
   apply(root) {
     proveLoad();
+    installSocketErrorGuard((line) => {
+      const logger = root.get("logger");
+      logger?.warn?.(line);
+    });
     logLine("apply-started", { hasWebServer: Boolean(root.get("webServer")) });
     const agents = new AgentRegistry();
     agents.setArchivedCheck((id) => {
@@ -5152,7 +5188,12 @@ var plugin_default = {
           notify({ t: "question-end", callId: askCallId });
           askCallId = null;
         }
-        notify({ t: "turn-end", turn: frame.turn ?? 0, reason: reasonText(frame.reason) });
+        notify({
+          t: "turn-end",
+          turn: frame.turn ?? 0,
+          reason: reasonText(frame.reason),
+          ...occupancyOf(root, agents.liveGet(id))
+        });
       } else notify(frame);
     }));
   }
@@ -5315,6 +5356,20 @@ window.addEventListener('DOMContentLoaded', () => {
 </script>
 </body>
 </html>`;
+}
+function occupancyOf(host, agent) {
+  const meter = host.get("tokenMeter");
+  const session = agent?.session;
+  const size = session?.requestContext?.()?.contextWindow;
+  if (!meter?.measure || !session) return {};
+  let used;
+  try {
+    used = meter.measure(session).totalTokens;
+  } catch {
+    return {};
+  }
+  if (typeof used !== "number" || !Number.isFinite(used) || typeof size !== "number" || !Number.isFinite(size) || size <= 0) return {};
+  return { used, size };
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
