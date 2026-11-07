@@ -1,5 +1,11 @@
 # 更新说明
 
+## 0.2.18 — 已发布（GitHub Release）
+
+- **`turn-end` 带上上下文用量（used / size），供桌宠在接近满上下文时自动交接（PR [#16](https://github.com/blacksunshy/coopanion-connector-dsh/pull/16)，致谢 @yuwanyou）**：DSH 能报时，`turn-end` 帧多两个可选字段 `used` / `size`（已用量 / 上下文窗口）；桌宠（fatfish ≥ 0.6.19）在用量到 90% 时自动切到新会话。读不到时这两个字段缺失，桌宠回退到 400 轮兜底。读取用 try/catch + 类型检查全兜底，`tokenMeter` / `requestContext` 不存在也不会崩
+- **修复 issue [#17](https://github.com/blacksunshy/coopanion-connector-dsh/issues/17)：Windows 上桌宠连接/重连期间 DSH 宿主进程 `exit(1)`**：根因在 `dsh-host-webserver` 的 socket 生命周期——`close` 先摘掉 `error` 监听，随后投递的 `ECONNRESET` 没人接，冒泡成未捕获异常被 `dsh-app-boot` 当致命错误退出。本仓加兜底：`process.setUncaughtExceptionCaptureCallback` 接管，`ECONNRESET` / `EPIPE` / `ECONNABORTED` / `ERR_STREAM_PREMATURE_CLOSE` 这类 socket 错误打 warn 不退出，其它异常原样 re-throw（仍带原始堆栈崩溃）。根因仍需 DSH 主仓修，这里只是避免每一次重连都拉挂宿主
+- 测试：`tsc --noEmit` 通过，`vitest` 88 passed / 1 skipped；产物已重建并提交
+
 ## 0.2.17 — 已发布（GitHub Release）
 
 - **修复 issue [#13](https://github.com/blacksunshy/coopanion-connector-dsh/issues/13)：DSH 0.2.1-rc.5 上发现不到已经打开的会话**：新版本的 `sessionController.agents` 是 `ApiSessionAgentController` 实例（不是 Map、也不是数组），唯一入口 `resolveAgent(sessionId)` 返回 **Promise**，而启动补扫原本全是同步探测，于是日志停在 `rescan-existing { sessionIds: 2, registered: 0 }`，桌宠收不到 `ready`。补扫增加异步探测分支（`await agents.resolveAgent(id)`，兼容 `{ agent }` 与直接返回 agent 两种形状），并在桌宠 `hello` 时若仍无 owner 再补扫一次；扫到 owner 立刻 `notifyBound`，桌宠不需要重连
