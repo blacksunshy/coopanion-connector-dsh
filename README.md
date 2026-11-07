@@ -92,6 +92,7 @@ pnpm run build          # 产出 dist/index.cjs
 | 会话选择器（`list-sessions` / `pick`）与「解除固定」（`unpin` / `clearPin`） | **≥ 0.2.11** | **≥ 0.6.11**（0.6.10 及更早会把 `session-list` 帧丢掉 → 面板显示"没有打开的会话"） |
 | 没有会话时新建（`new` 帧、桌宠侧 `dsh_new_session` 与面板「新建会话」）；已归档会话不再作为 owner | **≥ 0.2.12** | **≥ 0.6.12** |
 | 新建会话可指定工作区（`new.workspace` / `list-workspaces`，`created.workspace` 回执） | **≥ 0.2.14** | **≥ 0.6.14**（旧 Host 静默忽略 `workspace` 时桌宠报「无法确认」而非假装成功） |
+| `turn-end` 上报上下文用量（`used` / `size`），桌宠侧用量到 90% 自动新建会话并交接 | **≥ 0.2.18** | **≥ 0.6.19**（Host 不报用量时回退 400 轮兜底，每会话最多交接一次） |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
