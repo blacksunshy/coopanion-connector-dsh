@@ -71,6 +71,16 @@ export function resolveWorkspace(workspaces: readonly WorkspaceLike[], requested
 }
 
 /**
+ * How long DSH's Session Controller may take to mint a conversation before the bridge stops waiting.
+ *
+ * `create` accepts no signal, and a DSH build that queues creation behind a running turn — or that
+ * changed the shape of the command — never settles. The pet gives up at 20 seconds and can only say
+ * "DSH did not answer in time", which tells the person nothing; stopping here at 8 seconds hands it
+ * a reason they can act on instead.
+ */
+const CREATE_DEADLINE_MS = 8_000;
+
+/**
  * Create one conversation through the Session Controller, and report the session id or why not.
  *
  * `requested` is the workspace the pet named, if any: an explicit choice outranks every guess
@@ -83,6 +93,8 @@ export function resolveWorkspace(workspaces: readonly WorkspaceLike[], requested
  *
  * Failures are returned, not thrown: the pet reads the reason in its `refused` frame, and a bridge
  * that threw would leave the socket without an answer until its own timeout.
+ *
+ * The call is also bounded — see CREATE_DEADLINE_MS.
  */
 export async function createConversation(
   controller: SessionCommandsLike | undefined,
@@ -111,13 +123,25 @@ export async function createConversation(
   if (target === null) {
     return { reason: 'DSH has no workspace to create the conversation in' };
   }
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
-    const created = await create.call(controller!.commands, target);
+    const created = await Promise.race([
+      create.call(controller!.commands, target),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(new Error(`sessionController.create did not return within ${CREATE_DEADLINE_MS / 1000}s (this DSH build may queue creation behind a running turn, or the command shape may have changed)`)),
+          CREATE_DEADLINE_MS,
+        );
+        deadline.unref?.();
+      }),
+    ]);
     const landed = target.workspaceId === undefined
       ? undefined
-      : workspaces.find((workspace) => workspace.id === target.workspaceId);
+      : workspaces.find((workspace) => workspace.id === target!.workspaceId);
     return { session: created.sessionId, workspace: landed?.path ?? target.cwd ?? '' };
   } catch (err) {
-    return { reason: `DSH refused to create a conversation: ${err instanceof Error ? err.message : String(err)}` };
+    return { reason: `DSH could not create a conversation: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    if (deadline !== undefined) clearTimeout(deadline);
   }
 }

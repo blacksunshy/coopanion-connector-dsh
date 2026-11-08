@@ -4,7 +4,7 @@
  * The creation itself lives in the Session Controller; this covers the two decisions the bridge
  * makes around it — which Workspace, and how a refusal reads — plus the shape the pet receives.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createConversation, pickTarget, resolveWorkspace, type WorkspaceLike } from '../src/new-session.ts';
 
 const project = (id: string, path: string, sessionIds: string[] = []): WorkspaceLike => ({ id, path, sessionIds });
@@ -61,7 +61,24 @@ describe('asking DSH for a conversation', () => {
       null,
       null,
     );
-    expect(result).toEqual({ reason: 'DSH refused to create a conversation: session/conflict' });
+    expect(result).toEqual({ reason: 'DSH could not create a conversation: session/conflict' });
+  });
+
+  it('gives up on a Host whose create never settles, and says why', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = createConversation(
+        { commands: { create: () => new Promise(() => {}) } },
+        [fishPond],
+        null,
+        null,
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      const result = await pending;
+      expect('reason' in result ? result.reason : '').toContain('did not return within 8s');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a Host without a session controller instead of throwing', async () => {

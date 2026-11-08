@@ -4272,6 +4272,7 @@ function resolveWorkspace(workspaces, requested) {
   const wanted = pathKey(key);
   return workspaces.find((workspace) => pathKey(workspace.path) === wanted) ?? null;
 }
+var CREATE_DEADLINE_MS = 8e3;
 async function createConversation(controller, workspaces, ownerSession, knownCwd, requested = null) {
   const create = controller?.commands?.create;
   if (create === void 0) {
@@ -4293,12 +4294,24 @@ async function createConversation(controller, workspaces, ownerSession, knownCwd
   if (target === null) {
     return { reason: "DSH has no workspace to create the conversation in" };
   }
+  let deadline;
   try {
-    const created = await create.call(controller.commands, target);
+    const created = await Promise.race([
+      create.call(controller.commands, target),
+      new Promise((_, reject) => {
+        deadline = setTimeout(
+          () => reject(new Error(`sessionController.create did not return within ${CREATE_DEADLINE_MS / 1e3}s (this DSH build may queue creation behind a running turn, or the command shape may have changed)`)),
+          CREATE_DEADLINE_MS
+        );
+        deadline.unref?.();
+      })
+    ]);
     const landed = target.workspaceId === void 0 ? void 0 : workspaces.find((workspace) => workspace.id === target.workspaceId);
     return { session: created.sessionId, workspace: landed?.path ?? target.cwd ?? "" };
   } catch (err) {
-    return { reason: `DSH refused to create a conversation: ${err instanceof Error ? err.message : String(err)}` };
+    return { reason: `DSH could not create a conversation: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    if (deadline !== void 0) clearTimeout(deadline);
   }
 }
 
@@ -4342,7 +4355,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.18") return "0.2.18";
+  if ("0.2.19") return "0.2.19";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4808,6 +4821,7 @@ var plugin_default = {
                   log("warn", `created ${after} but DSH could not attach it: ${outcome.reason}`);
                   return { session: after };
                 }
+                log("warn", `could not create a conversation: ${outcome.reason}`);
               }
               return outcome;
             },

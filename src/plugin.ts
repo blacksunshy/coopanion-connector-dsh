@@ -566,6 +566,9 @@ export default {
               log('warn', `created ${after} but DSH could not attach it: ${outcome.reason}`);
               return { session: after };
             }
+            // Nothing was created. Log the reason here too: the pet can only show it in a bubble,
+            // and whoever debugs this needs the exact words in the Host log.
+            log('warn', `could not create a conversation: ${outcome.reason}`);
           }
           return outcome;
         },

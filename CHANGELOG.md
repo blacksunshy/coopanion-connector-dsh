@@ -1,5 +1,12 @@
 # 更新说明
 
+## 0.2.19 — 已发布（GitHub Release）
+
+- **新建会话不再无限等待**：`createConversation` 对 `sessionController.commands.create` 加了 8 秒上限。此前这个调用没有任何超时，若 DSH 把新建排在正在跑的回合之后、或该版本命令形状变了而永不 resolve，插件就一直不回帧，桌宠干等 20 秒只能报「DSH did not answer in time」（讨论 [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) 里 YuYinDaJiang 的「开新会话接口超时」）。现在 8 秒即带原因失败，桌宠能把原因念出来，自动交接也不会被卡死
+- **失败原因写进 Host 日志**：新建失败时除了回 `refused` 帧，还在 Host 日志里记一条 `could not create a conversation: <原因>`，排查不用靠桌宠转述
+- **列会话超时在桌宠侧修正（需 fatfish ≥ 0.6.21）**：Host 不支持 `list-sessions` 时回的是 `error` 帧，旧桌宠只认 `session-list`，于是白等满超时；新桌宠把 `error` 当答案立即返回并记下 Host 原话
+- 测试：`tsc --noEmit` 通过，`vitest` 89 passed / 1 skipped（新增「create 永不返回时 8 秒放弃并给出原因」）；`dist/index.cjs` 已重建并提交
+
 ## 0.2.18 — 已发布（GitHub Release）
 
 - **`turn-end` 带上上下文用量（used / size），供桌宠在接近满上下文时自动交接（PR [#16](https://github.com/blacksunshy/coopanion-connector-dsh/pull/16)，致谢 @yuwanyou）**：DSH 能报时，`turn-end` 帧多两个可选字段 `used` / `size`（已用量 / 上下文窗口）；桌宠（fatfish ≥ 0.6.19）在用量到 90% 时自动切到新会话。读不到时这两个字段缺失，桌宠回退到 400 轮兜底。读取用 try/catch + 类型检查全兜底，`tokenMeter` / `requestContext` 不存在也不会崩
