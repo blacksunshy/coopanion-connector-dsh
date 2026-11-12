@@ -289,6 +289,69 @@ describe('which conversation the pet speaks into', () => {
   });
 });
 
+describe('the conversations the pet reads off the list', () => {
+  /** A live agent whose log already holds the given events. */
+  const titledAgent = (id: string, events: Array<{ type: string; data?: unknown }>): LiveAgent => ({
+    session: { id, header: { cwd: `/w/${id}` }, snapshotEvents: () => events },
+  });
+
+  it('carries the title the person knows the conversation by', () => {
+    // DSH never puts a title in the header; it appends a session/title event once the first
+    // message names the conversation. A pet that only sees an id and a directory guesses.
+    const agents = new AgentRegistry();
+    agents.add('a', titledAgent('a', [
+      { type: 'session/created' },
+      { type: 'session/title', data: { title: '修复桌宠会话错发问题' } },
+    ]));
+    expect(agents.listSessions()).toEqual([
+      { id: 'a', cwd: '/w/a', model: '', title: '修复桌宠会话错发问题', owner: true, pinned: false, subagent: false },
+    ]);
+  });
+
+  it('is empty while nobody has named the conversation yet', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', titledAgent('a', [{ type: 'session/created' }]));
+    expect(agents.listSessions()[0].title).toBe('');
+  });
+
+  it('keeps the last title when the conversation was renamed', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', titledAgent('a', [
+      { type: 'session/title', data: { title: '先说的事' } },
+      { type: 'user/message', data: { text: '换个说法' } },
+      { type: 'session/title', data: { title: '换个说法' } },
+    ]));
+    expect(agents.listSessions()[0].title).toBe('换个说法');
+  });
+
+  it('takes a fresh title without folding the log again', () => {
+    const agents = new AgentRegistry();
+    let folded = 0;
+    agents.add('a', {
+      session: {
+        id: 'a',
+        header: { cwd: '/w/a' },
+        snapshotEvents: () => {
+          folded += 1;
+          return [{ type: 'session/title', data: { title: '旧的' } }];
+        },
+      },
+    });
+    expect(agents.listSessions()[0].title).toBe('旧的');
+    // A rename arrives as an event, so the cached fold is replaced rather than recomputed:
+    // listSessions() runs on every owner change and every session question.
+    agents.rememberTitle('a', '新的');
+    expect(agents.listSessions()[0].title).toBe('新的');
+    expect(folded).toBe(1);
+  });
+
+  it('survives an agent that cannot show its log', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', { session: { id: 'a', header: { cwd: '/w/a' } } });
+    expect(agents.listSessions()[0]).toMatchObject({ id: 'a', title: '' });
+  });
+});
+
 describe('a session event', () => {
   it('becomes a notice only for the turns the pet shows', () => {
     expect(noticeOf('s', { type: 'turn/start', data: { turn: 2 } })?.frame).toEqual({ t: 'turn-start', turn: 2 });

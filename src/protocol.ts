@@ -23,6 +23,17 @@ export interface SessionSummary {
   id: string;
   cwd: string;
   model: string;
+  /**
+   * The conversation's title, as the person sees it in DSH's sidebar.
+   *
+   * A pet that can only read an id and a directory cannot tell "the bug-fix conversation" from
+   * "the one about the other repo", so it guesses — and a guess is how a line lands in the wrong
+   * window. The title is what the person themselves uses to recognise a conversation.
+   *
+   * Empty for a conversation nobody has spoken in yet (DSH titles a log from its first user
+   * message), so a reader must treat '' as "untitled", not as "no title support".
+   */
+  title?: string;
   owner: boolean;
   pinned: boolean;
   subagent: boolean;

@@ -1009,6 +1009,15 @@ export default {
         // 即便这个 session 不是 owner，也缓存一下，切过来时能直接读到
         return;
       }
+      // 缓存标题：DSH 在会话被起名时（第一条用户消息之后）追加一条 session/title，
+      // 标题只存在于日志里、不在 header 里。同样不限于 owner —— 桌宠要能认出每一个开着的会话。
+      if (event?.type === 'session/title') {
+        const title = typeof data.title === 'string' ? data.title : '';
+        agents.rememberTitle(id, title);
+        // 名字变了就是菜单变了：让桌宠手里的那份清单跟着更新，而不是等它下次自己问。
+        pushSessions();
+        return;
+      }
       debug('session-event', { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
       // Auto-follow：只对**人真的动手**的事件生效（用户说话、答复审批）。
       // 模型的输出（assistant/message、turn/start、turn/end、tool/call）刻意不算：模型在哪干活

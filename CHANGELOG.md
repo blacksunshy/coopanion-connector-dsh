@@ -1,5 +1,15 @@
 # 更新说明
 
+## 0.2.22 — 未发布
+
+- **新增：会话清单里带会话标题**（由桌宠侧提出：只给 id 和目录，桌宠认不出哪条是"修 bug 的那个"、哪条是"聊另一个仓库的那个"，只能猜；猜就是发错的起点）。`SessionSummary` 增加可选字段 `title`，`listSessions()` 每行都带它：
+  - 标题不在 `SessionHeader` 里——DSH 把标题写成日志里的一条 `session/title` 事件（第一条用户消息之后追加），所以这里折一遍日志取最后一条，与 DSH 自己的 `foldSessionTitle` 等价
+  - 折叠结果按 session 缓存，之后由 `session/event` 的 `session/title` 分支增量更新（`rememberTitle`），不会每问一次清单就把长会话扫一遍
+  - 还没起名的会话给空串，桌宠据此知道"这条还没名字"，而不是"不认识它"
+  - `session/title` 到达时顺带 push 一帧 `session-list`：名字变了就是菜单变了，桌宠不必等下次自己问
+- 只**追加**字段，旧桌宠忽略它照常工作；`PROTOCOL_VERSION` 仍是 1
+- 测试：`tsc --noEmit` 通过；`vitest` **109 passed**（新增 5 条：带标题、未起名为空、改名取最后一条、增量更新不重复折叠、agent 无法提供日志时安全退化）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
+
 ## 0.2.21 — 未发布
 
 - **修复：模型自己的输出会抢走归属，把刚固定好的会话冲掉**（0.2.20 装机实测发现）。自动跟随此前只要看到"这个会话里有活动"就把 owner 挪过去，而 `assistant/message`、`turn/start`、`turn/end`、`tool/call` 全算活动——于是桌宠刚 `pick` 到 A，模型在 B 里继续回几条，owner 就被抢回 B 并连带清掉 pin：`dsh_sessions` 的「默认送到这里」标错、下一句话跟着发错，正是 0.2.20 想修掉的那个毛病的残留路径。现在只有**人**的动作才触发跟随：

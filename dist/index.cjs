@@ -4082,6 +4082,12 @@ var AgentRegistry = class {
   live = /* @__PURE__ */ new Map();
   /** model 按 session 缓存，因为模型是请求级属性而非 agent 常驻属性。 */
   modelCache = /* @__PURE__ */ new Map();
+  /**
+   * title 按 session 缓存。标题在日志里，折叠它要扫完整个会话的 events（长会话数千条），
+   * 而 `listSessions()` 会在每次 owner 变化与每次桌宠问清单时被调用，所以只在第一次折叠，
+   * 之后靠 `session/title` 事件增量更新（见 `rememberTitle`）。
+   */
+  titleCache = /* @__PURE__ */ new Map();
   ownerId = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   pinned = false;
@@ -4208,6 +4214,34 @@ var AgentRegistry = class {
   rememberModel(id, model) {
     if (model) this.modelCache.set(id, model);
   }
+  /**
+   * 记录某会话的标题。DSH 追加 `session/title` 时调用；长度为零视为"还没起名"，
+   * 于是丢掉缓存，下次 `listSessions()` 重新折叠日志——会话刚建好时正是这个状态。
+   */
+  rememberTitle(id, title) {
+    if (title) this.titleCache.set(id, title);
+    else this.titleCache.delete(id);
+  }
+  /**
+   * 会话的标题，没起名时给空串。
+   *
+   * 标题不在 header 里，而在日志的事件里：DSH 只在第一条用户消息之后追加一条
+   * `session/title`，所以这里折叠日志取最后一条（等价于 DSH 自己的 `foldSessionTitle`）。
+   * 折叠结果按 session 缓存，之后由 `rememberTitle` 增量更新。
+   */
+  titleOf(sessionId) {
+    const cached = this.titleCache.get(sessionId);
+    if (cached !== void 0) return cached;
+    const events = this.live.get(sessionId)?.session.snapshotEvents?.() ?? [];
+    let title = "";
+    for (const event of events) {
+      if (event?.type !== "session/title") continue;
+      const data = event.data;
+      if (typeof data?.title === "string") title = data.title;
+    }
+    this.titleCache.set(sessionId, title);
+    return title;
+  }
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts() {
     const agent = this.owner;
@@ -4237,6 +4271,8 @@ var AgentRegistry = class {
         id,
         cwd: String(agent.session.header?.cwd ?? ""),
         model: this.modelOf(id),
+        // 没有标题的老会话给空串：桌宠据此知道"这条还没起名"，而不是"不认识它"。
+        title: this.titleOf(id),
         owner: id === this.ownerId && !sub,
         pinned: this.pinned && id === this.ownerId,
         subagent: sub
@@ -4422,7 +4458,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.21") return "0.2.21";
+  if ("0.2.22") return "0.2.22";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -5252,6 +5288,12 @@ var plugin_default = {
       if (event?.type === "request/header") {
         const model = data.header?.config?.model;
         if (typeof model === "string" && model) agents.rememberModel(id, model);
+        return;
+      }
+      if (event?.type === "session/title") {
+        const title = typeof data.title === "string" ? data.title : "";
+        agents.rememberTitle(id, title);
+        pushSessions();
         return;
       }
       debug("session-event", { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
