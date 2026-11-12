@@ -304,7 +304,7 @@ describe('the conversations the pet reads off the list', () => {
       { type: 'session/title', data: { title: '修复桌宠会话错发问题' } },
     ]));
     expect(agents.listSessions()).toEqual([
-      { id: 'a', cwd: '/w/a', model: '', title: '修复桌宠会话错发问题', owner: true, pinned: false, subagent: false },
+      { id: 'a', cwd: '/w/a', model: '', title: '修复桌宠会话错发问题', running: false, owner: true, pinned: false, subagent: false },
     ]);
   });
 
@@ -349,6 +349,54 @@ describe('the conversations the pet reads off the list', () => {
     const agents = new AgentRegistry();
     agents.add('a', { session: { id: 'a', header: { cwd: '/w/a' } } });
     expect(agents.listSessions()[0]).toMatchObject({ id: 'a', title: '' });
+  });
+});
+
+describe('whether a conversation is working right now', () => {
+  const agentWith = (id: string, extra: Partial<LiveAgent> = {}): LiveAgent => ({
+    session: { id, header: { cwd: `/w/${id}` } },
+    ...extra,
+  });
+
+  it('reads DSH\'s own status when the Host exposes it', () => {
+    // `agent.status` is a live property (`'idle' | 'running'`), so it is the authoritative answer
+    // and needs no event subscription: reading it at list time is always current.
+    const agents = new AgentRegistry();
+    agents.add('busy', agentWith('busy', { status: 'running' }));
+    agents.add('quiet', agentWith('quiet', { status: 'idle' }));
+    const rows = agents.listSessions();
+    expect(rows.find((row) => row.id === 'busy')?.running).toBe(true);
+    expect(rows.find((row) => row.id === 'quiet')?.running).toBe(false);
+  });
+
+  it('falls back to the turn it saw start and has not seen end', () => {
+    // A Host that does not expose `status` must still answer, otherwise every conversation reads
+    // as idle and the pet cannot tell "still thinking" from "ignored me".
+    const agents = new AgentRegistry();
+    agents.add('a', agentWith('a'));
+    expect(agents.listSessions()[0].running).toBe(false);
+    agents.noteTurnEvent('a', { type: 'turn/start', data: { turn: 1 } });
+    expect(agents.listSessions()[0].running).toBe(true);
+    agents.noteTurnEvent('a', { type: 'turn/end', data: { turn: 1, reason: 'completed' } });
+    expect(agents.listSessions()[0].running).toBe(false);
+  });
+
+  it('prefers the status over the fallback when the two disagree', () => {
+    // The Host is the authority: a reloaded or resumed conversation can have a turn open in the
+    // log while its agent is idle, and telling the pet "still running" then is a lie it acts on.
+    const agents = new AgentRegistry();
+    agents.add('a', agentWith('a', { status: 'idle' }));
+    agents.noteTurnEvent('a', { type: 'turn/start', data: { turn: 1 } });
+    expect(agents.listSessions()[0].running).toBe(false);
+  });
+
+  it('forgets the open turn when the conversation is disposed', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentWith('a'));
+    agents.noteTurnEvent('a', { type: 'turn/start', data: { turn: 1 } });
+    agents.remove('a');
+    agents.add('a', agentWith('a'));
+    expect(agents.listSessions()[0].running).toBe(false);
   });
 });
 

@@ -1018,6 +1018,13 @@ export default {
         pushSessions();
         return;
       }
+      // 记下轮次的开合：`agent.status` 读不到时，「这个会话是不是在跑」就靠它兜底。
+      // 顺手在轮次起止时推一次清单 —— 「正在运行」这个状态正是桌宠最需要及时知道的东西，
+      // 否则它只能靠下次自己问，而那时候事情早就过去了。
+      if (event?.type === 'turn/start' || event?.type === 'turn/end') {
+        agents.noteTurnEvent(id, event);
+        pushSessions();
+      }
       debug('session-event', { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
       // Auto-follow：只对**人真的动手**的事件生效（用户说话、答复审批）。
       // 模型的输出（assistant/message、turn/start、turn/end、tool/call）刻意不算：模型在哪干活

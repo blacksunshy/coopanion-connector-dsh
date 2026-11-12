@@ -34,6 +34,17 @@ export interface SessionSummary {
    * message), so a reader must treat '' as "untitled", not as "no title support".
    */
   title?: string;
+  /**
+   * Whether this conversation is working right now — a turn is open and the model is still going.
+   *
+   * A pet that cannot see this reads "no answer yet" as "the person is ignoring me" and sends the
+   * same thing again, or speaks into a busy conversation believing it is idle. DSH exposes it as
+   * `agent.status` (`'idle' | 'running'`); when that is unavailable the bridge falls back to the
+   * turn boundaries it saw, so a reader gets a plain boolean either way.
+   *
+   * Absent means the Host does not report it (anything older than 0.2.23) — *not* idle.
+   */
+  running?: boolean;
   owner: boolean;
   pinned: boolean;
   subagent: boolean;

@@ -4088,6 +4088,15 @@ var AgentRegistry = class {
    * 之后靠 `session/title` 事件增量更新（见 `rememberTitle`）。
    */
   titleCache = /* @__PURE__ */ new Map();
+  /**
+   * Whether a turn is open, for the Hosts where `agent.status` cannot be read.
+   *
+   * DSH is the authority when it answers (`agent.status`), so this map is only consulted as a
+   * fallback: it is maintained from the `turn/start` / `turn/end` events this plugin already sees,
+   * which is exactly the "is a turn running" question the pet asks. Kept per session and deleted on
+   * `remove`, so a disposed conversation cannot leave a stale "running" behind.
+   */
+  openTurn = /* @__PURE__ */ new Set();
   ownerId = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   pinned = false;
@@ -4138,6 +4147,7 @@ var AgentRegistry = class {
   remove(id) {
     this.live.delete(id);
     this.modelCache.delete(id);
+    this.openTurn.delete(id);
     if (this.pinned && this.ownerId === id) this.pinned = false;
     if (this.ownerId === id) {
       this.ownerId = [...this.live.keys()].at(-1) ?? null;
@@ -4242,6 +4252,28 @@ var AgentRegistry = class {
     this.titleCache.set(sessionId, title);
     return title;
   }
+  /**
+   * Tracks `turn/start` / `turn/end` for the fallback answer to "is this conversation working".
+   *
+   * Only used when `agent.status` is unavailable, but it is recorded unconditionally: the fallback
+   * has to be correct the first time it is asked, and by then the turn may already be running.
+   */
+  noteTurnEvent(id, event) {
+    if (event?.type === "turn/start") this.openTurn.add(id);
+    else if (event?.type === "turn/end") this.openTurn.delete(id);
+  }
+  /**
+   * Whether this conversation is working right now.
+   *
+   * DSH's `agent.status` wins when it is readable; otherwise the turn listener's own view stands in.
+   * Deliberately never throws: an unreadable status must cost a field, not the whole session list.
+   */
+  runningOf(id, agent) {
+    const status = agent.status;
+    if (status === "running") return true;
+    if (status === "idle") return false;
+    return this.openTurn.has(id);
+  }
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts() {
     const agent = this.owner;
@@ -4273,6 +4305,8 @@ var AgentRegistry = class {
         model: this.modelOf(id),
         // 没有标题的老会话给空串：桌宠据此知道"这条还没起名"，而不是"不认识它"。
         title: this.titleOf(id),
+        // 有没有在跑轮次：桌宠据此知道"它是正在忙"还是"它没理我"，也据此决定要不要再等。
+        running: this.runningOf(id, agent),
         owner: id === this.ownerId && !sub,
         pinned: this.pinned && id === this.ownerId,
         subagent: sub
@@ -4458,7 +4492,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.22") return "0.2.22";
+  if ("0.2.23") return "0.2.23";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -5295,6 +5329,10 @@ var plugin_default = {
         agents.rememberTitle(id, title);
         pushSessions();
         return;
+      }
+      if (event?.type === "turn/start" || event?.type === "turn/end") {
+        agents.noteTurnEvent(id, event);
+        pushSessions();
       }
       debug("session-event", { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
       if (agents.ownerSession !== id && isPersonActionEvent(event)) {

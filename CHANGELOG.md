@@ -1,5 +1,16 @@
 # 更新说明
 
+## 0.2.23 — 未发布
+
+- **新增：会话清单里带「是否正在跑轮次」**（桌宠侧提出：`dsh_sessions` 除了标题，还要能看出每个会话是不是正在运行）。`SessionSummary` 增加可选字段 `running`，`listSessions()` 每行都带它：
+  - 首选 DSH 自己的 `agent.status`（`'idle' | 'running'`，是 Agent 上的实时属性，读一次就是当前值，不需要订阅事件），把它当作权威答案
+  - 读不到时退回本插件自己跟的 `turn/start` / `turn/end`（`noteTurnEvent` 维护的集合），所以老 Host 上这个字段依然能答，而不是永远空着
+  - 两者冲突时以 `agent.status` 为准：重载或恢复的会话可能在日志里留着未闭合的 turn，而 agent 其实空闲，这时报「还在跑」是桌宠会照着做错事的那种谎
+  - 会话被关闭时同步忘掉它的未闭合 turn，避免关掉的会话一直显示「正在跑」
+  - `turn/start` / `turn/end` 到达时顺带 push 一帧 `session-list`：状态变了就是菜单变了，桌宠不必等下次自己问
+- 只**追加**字段，旧桌宠忽略它照常工作；`PROTOCOL_VERSION` 仍是 1
+- 测试：`tsc --noEmit` 通过；`vitest` **113 passed**（新增 4 条：读 `agent.status`、退回轮次事件、状态优先于兜底、会话关闭后忘掉未闭合 turn）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
+
 ## 0.2.22 — 未发布
 
 - **新增：会话清单里带会话标题**（由桌宠侧提出：只给 id 和目录，桌宠认不出哪条是"修 bug 的那个"、哪条是"聊另一个仓库的那个"，只能猜；猜就是发错的起点）。`SessionSummary` 增加可选字段 `title`，`listSessions()` 每行都带它：

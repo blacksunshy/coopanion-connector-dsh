@@ -45,6 +45,15 @@ export interface LiveAgent {
      */
     snapshotEvents?(): Array<{ type?: unknown; data?: unknown }>;
   };
+  /**
+   * DSH's own liveness flag: `'idle' | 'running'`, read straight off the Agent.
+   *
+   * This is the authoritative answer to "is this conversation working right now", and it needs no
+   * event subscription — it is a property, so reading it at `listSessions()` time is always current.
+   * Declared loosely (`unknown`) because it is not part of this plugin's typed Host surface, and a
+   * Host that does not expose it must fall back instead of throwing.
+   */
+  status?: unknown;
   /** Submits context and wakes the agent; resolves once the message is queued. */
   followup?(message: unknown): void;
   /** Submits context without waking the agent. */
@@ -64,6 +73,15 @@ export class AgentRegistry {
    * 之后靠 `session/title` 事件增量更新（见 `rememberTitle`）。
    */
   private readonly titleCache = new Map<string, string>();
+  /**
+   * Whether a turn is open, for the Hosts where `agent.status` cannot be read.
+   *
+   * DSH is the authority when it answers (`agent.status`), so this map is only consulted as a
+   * fallback: it is maintained from the `turn/start` / `turn/end` events this plugin already sees,
+   * which is exactly the "is a turn running" question the pet asks. Kept per session and deleted on
+   * `remove`, so a disposed conversation cannot leave a stale "running" behind.
+   */
+  private readonly openTurn = new Set<string>();
   private ownerId: string | null = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   private pinned: boolean = false;
@@ -118,6 +136,7 @@ export class AgentRegistry {
   remove(id: string): void {
     this.live.delete(id);
     this.modelCache.delete(id);
+    this.openTurn.delete(id);
     // The pinned session is gone — nothing left to pin. Let natural follow resume.
     if (this.pinned && this.ownerId === id) this.pinned = false;
     if (this.ownerId === id) {
@@ -237,6 +256,30 @@ export class AgentRegistry {
     return title;
   }
 
+  /**
+   * Tracks `turn/start` / `turn/end` for the fallback answer to "is this conversation working".
+   *
+   * Only used when `agent.status` is unavailable, but it is recorded unconditionally: the fallback
+   * has to be correct the first time it is asked, and by then the turn may already be running.
+   */
+  noteTurnEvent(id: string, event: SessionEventLike): void {
+    if (event?.type === 'turn/start') this.openTurn.add(id);
+    else if (event?.type === 'turn/end') this.openTurn.delete(id);
+  }
+
+  /**
+   * Whether this conversation is working right now.
+   *
+   * DSH's `agent.status` wins when it is readable; otherwise the turn listener's own view stands in.
+   * Deliberately never throws: an unreadable status must cost a field, not the whole session list.
+   */
+  private runningOf(id: string, agent: LiveAgent): boolean {
+    const status = (agent as { status?: unknown }).status;
+    if (status === 'running') return true;
+    if (status === 'idle') return false;
+    return this.openTurn.has(id);
+  }
+
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts(): AgentFacts | null {
     const agent = this.owner;
@@ -258,8 +301,8 @@ export class AgentRegistry {
    * Archived sessions are excluded: one stays live but refuses every model step, so words
    * submitted there end as `blocked` instead of being answered.
    */
-  listSessions(): Array<{ id: string; cwd: string; model: string; title: string; owner: boolean; pinned: boolean; subagent: boolean }> {
-    const out: Array<{ id: string; cwd: string; model: string; title: string; owner: boolean; pinned: boolean; subagent: boolean }> = [];
+  listSessions(): Array<{ id: string; cwd: string; model: string; title: string; running: boolean; owner: boolean; pinned: boolean; subagent: boolean }> {
+    const out: Array<{ id: string; cwd: string; model: string; title: string; running: boolean; owner: boolean; pinned: boolean; subagent: boolean }> = [];
     for (const [id, agent] of this.live) {
       if (this.archived(id)) continue;
       const sub = this.isSubagent(agent);
@@ -269,6 +312,8 @@ export class AgentRegistry {
         model: this.modelOf(id),
         // 没有标题的老会话给空串：桌宠据此知道"这条还没起名"，而不是"不认识它"。
         title: this.titleOf(id),
+        // 有没有在跑轮次：桌宠据此知道"它是正在忙"还是"它没理我"，也据此决定要不要再等。
+        running: this.runningOf(id, agent),
         owner: id === this.ownerId && !sub,
         pinned: this.pinned && id === this.ownerId,
         subagent: sub,

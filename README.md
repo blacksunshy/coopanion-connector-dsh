@@ -110,6 +110,7 @@ pnpm run build          # 产出 dist/index.cjs
 | **发错会话修复**：`say` 可带目标 `session`；每次 `say` 重新校验实时列表并对失效目标拒收（不回退到 owner）；`accepted` / `refused` 带 `session` + `sessions` + `code`；`ready` 与会话开关时 push 完整列表；`list-sessions` 顶层带 `owner` | **≥ 0.2.20** | **≥ 0.6.22**（旧桌宠不带 `session` 时 Host 保持旧的 owner 行为，所以**只升 Host 不会坏**；但要真正修掉发错会话，桌宠也必须升） |
 | **自动跟随只认人的动作**：`assistant/message`、`turn/start`、`turn/end`、`tool/call` 不再抢走归属，只有 `user/message` 与 `approval/decided` 会 | **≥ 0.2.21** | **≥ 0.6.23**（桌宠侧同时把「你就指着这里」与「默认送到这里」拆成两个标记） |
 | **会话清单带标题**：`SessionSummary.title` 可选项，`listSessions()` 折 `session/title` 事件并缓存；`session/title` 到达时 push `session-list` | **≥ 0.2.22** | **≥ 0.6.24**（旧桌宠忽略该字段照常工作；没有它桌宠只能凭 id 与目录猜） |
+| **会话清单带运行状态**：`SessionSummary.running` 可选项，取 `agent.status`，读不到时退回本插件跟的 `turn/start`／`turn/end`；轮次起止时 push `session-list` | **≥ 0.2.23** | **≥ 0.6.25**（旧桌宠忽略该字段；没有它桌宠分不出「还在跑」与「没回答」） |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
