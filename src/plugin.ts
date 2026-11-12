@@ -439,6 +439,18 @@ export default {
     };
 
     /**
+     * Hand the pet the current list of open conversations.
+     *
+     * Called whenever one is opened or disposed, even if the owner did not move: a pet told only
+     * about owner changes still believes a conversation it is holding is open after it is gone,
+     * which is how a `say` ends up addressed to something that no longer exists.
+     */
+    const pushSessions = (): void => {
+      if (!hub?.connected) return;
+      hub.send({ t: 'session-list', sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession });
+    };
+
+    /**
      * The projects a `new` may target, with how many conversations each one has open.
      *
      * Membership is read the way DSH records it (`sessionIds`), with the directory as a fallback
@@ -504,37 +516,84 @@ export default {
           }
           knownCwd = facts.cwd || knownCwd;
           debug('welcome-ok', facts);
-          return facts;
+          // The first frame a pet ever sees also names every open conversation, so it starts out
+          // knowing where it is speaking and what else it could speak into.
+          return { ...facts, sessions: agents.listSessions(), pinned: agents.isPinned };
         },
-        say: async (text, from) => {
+        say: async (text, from, target) => {
           const body = text.trim();
-          if (!body) return 'empty message';
-          if (carriesBridgePrefix(body)) return 'this line already carries the bridge\'s prefix, so a second one would be nested around it';
-          if (!agents.forwarding) return 'auto-forward disabled — open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel';
+          if (!body) return { reason: 'empty message', code: 'empty' as const };
+          if (carriesBridgePrefix(body)) {
+            return { reason: 'this line already carries the bridge\'s prefix, so a second one would be nested around it', code: 'nested-prefix' as const };
+          }
+          if (!agents.forwarding) {
+            return { reason: 'auto-forward disabled — open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel', code: 'forwarding-off' as const };
+          }
+          // Re-read the live list on every say. The owner the registry holds was chosen from events
+          // that may never have arrived (DSH is silent on a plain tab switch), so this is the one
+          // place where what we are about to do is checked against what is actually open.
+          const sessions = agents.listSessions();
+          const live = new Set(sessions.filter((session) => !session.subagent).map((session) => session.id));
+          const ownerSession = agents.ownerSession;
+          // A named conversation is an instruction, not a hint: deliver there or refuse. Falling
+          // back to the owner here is exactly how a person's line lands in another conversation.
+          if (target !== undefined) {
+            if (!live.has(target)) {
+              debug('say-refused-stale-target', { target, ownerSession, liveCount: live.size });
+              return {
+                reason: `conversation ${target} is no longer open (it was archived, disposed, or was a subagent); pick one of the open conversations before speaking`,
+                code: 'stale-session' as const,
+                session: ownerSession,
+                sessions,
+                pinned: agents.isPinned,
+              };
+            }
+            if (target !== ownerSession && !agents.forceOwner(target)) {
+              return {
+                reason: `conversation ${target} could not be made the owner; pick it again`,
+                code: 'stale-session' as const,
+                session: ownerSession,
+                sessions,
+                pinned: agents.isPinned,
+              };
+            }
+            if (target !== ownerSession) {
+              // The owner really moved: tell the pet, so its panel and its next target agree.
+              const facts = agents.facts();
+              if (facts && hub?.connected) hub.notifyBound(facts);
+            }
+          }
           const agent = agents.owner;
           if (!agent) {
             debug('say-refused-no-owner', {
               liveCount: agents.liveSize,
-              ownerSession: agents.ownerSession,
+              ownerSession,
               isPinned: agents.isPinned,
               forwarding: agents.forwarding,
             });
-            return 'no conversation is open on the DSH side; a new one can be started with dsh_new_session';
+            return {
+              reason: 'no conversation is open on the DSH side; create one before speaking',
+              code: 'no-session' as const,
+              session: null,
+              sessions,
+              pinned: agents.isPinned,
+            };
           }
-          if (typeof agent.followup !== 'function') return 'this DSH build cannot accept a message here';
+          if (typeof agent.followup !== 'function') {
+            return { reason: 'this DSH build cannot accept a message here', code: 'cannot-deliver' as const, session: ownerSession, sessions };
+          }
+          const delivered = agents.ownerSession;
           try {
             await resolveFactory();
             agent.followup(buildUserMessage(`${from}（通过桌宠）说：${body}`, userTemplate));
-            // 告诉桌宠它的话已经递到 DSH 了——让 Coo 知道这件事"真的发生了"。
-            hub?.send({ t: 'notice', kind: 'forwarded', text: `已递送到 DSH（会话 ${agents.ownerSession ?? '?'}）：${body.slice(0, 80)}${body.length > 80 ? '…' : ''}` });
             return null;
           } catch (err) {
-            hub?.send({ t: 'notice', kind: 'forward-failed', text: `递送失败：${(err as Error).message}` });
-            return `DSH refused the message: ${(err as Error).message}`;
+            debug('say-failed', { session: delivered, error: (err as Error).message });
+            return { reason: `DSH refused the message: ${(err as Error).message}`, code: 'host-error' as const, session: delivered, sessions };
           }
         },
         pick: (session) => (agents.setOwner(String(session)) ? null : 'no such open conversation'),
-        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession }),
         unpin: () => {
           agents.clearPin();
           return null;
@@ -919,6 +978,8 @@ export default {
       // If the pet is waiting (connected but no session yet), give it a late `ready` now.
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);
+      // Also tell it what else is open: a new conversation changes the menu, not just the target.
+      pushSessions();
     }) as never);
 
     root.on('session/disposed', ((session: { id?: string }) => {
@@ -932,6 +993,9 @@ export default {
         if (facts) hub.notifyBound(facts);    // a new owner is available
         else hub.notifyUnbound();              // no owner left
       }
+      // A conversation disappearing changes the list even when it was not the owner — a pet
+      // holding it as its target would otherwise never learn it is gone.
+      pushSessions();
     }) as never);
 
     root.on('session/event', ((session: { id?: string }, event: SessionEventLike) => {

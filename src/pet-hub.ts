@@ -9,7 +9,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { SAY_MAX, parsePetFrame, type HostFrame, type HostAck, type PetFrame } from './protocol.ts';
+import { SAY_MAX, parsePetFrame, type HostFrame, type HostAck, type PetFrame, type SayOutcome, type SessionSummary } from './protocol.ts';
 
 /** The path the pet connects to, relative to the DSH web server's root. */
 export const PET_PATH = '/coopanion/pet';
@@ -26,14 +26,23 @@ export interface PetHubOptions {
    * The pet connects first and waits in a "bound = false" state until facts become available;
    * when they do, the Host sends a late `ready` frame. This lets the pet connect before any
    * conversation has been created (common on `dsh web --no-open` and other CLI paths).
+   *
+   * `sessions`/`pinned` ride along so the pet's very first frame also tells it which
+   * conversations exist — it should never have to guess, or ask, to know where it is speaking.
    */
-  welcome(): { session: string; cwd: string; model: string } | null;
-  /** A person's words arrived; resolve to the refusal reason, or null when they were submitted. */
-  say(text: string, from: string): Promise<string | null>;
+  welcome(): { session: string; cwd: string; model: string; sessions?: SessionSummary[]; pinned?: boolean } | null;
+  /**
+   * A person's words arrived; resolve to the refusal reason, or null when they were submitted.
+   *
+   * `target` is the conversation the pet named, when it named one. Without it the caller keeps its
+   * old behaviour (its own current owner); with it, the caller must deliver there or refuse —
+   * never quietly fall back to another conversation, which is how lines end up in the wrong place.
+   */
+  say(text: string, from: string, target?: string): Promise<SayOutcome>;
   /** The pet asked to switch the owning session; return null to accept, or the refusal reason. */
   pick?(session: string): string | null;
   /** The pet asked for every live session, to render an explicit picker. */
-  listSessions?(): { sessions: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }>; pinned: boolean };
+  listSessions?(): { sessions: SessionSummary[]; pinned: boolean; owner?: string | null };
   /** The pet asked to drop the pin so auto-follow takes over again; return null when accepted. */
   unpin?(): string | null;
   /**
@@ -92,10 +101,19 @@ export class PetHub {
   }
 
   /** Tells the pet the owning conversation has appeared or changed; sends `ready` if the pet is waiting. */
-  notifyBound(facts: { session: string; cwd: string; model: string }): void {
+  notifyBound(facts: { session: string; cwd: string; model: string; sessions?: SessionSummary[]; pinned?: boolean }): void {
     if (!this.connected) return;
     this.opts.log('info', `DSH bridge bound to session ${facts.session}`);
-    this.connection!.send(JSON.stringify({ t: 'ready', v: PROTOCOL_VERSION, ...facts } satisfies HostFrame));
+    // Every owner change is also a chance to hand the pet the full list: it is the only way a pet
+    // can notice on its own that a conversation it meant to speak into is gone.
+    const list = this.opts.listSessions?.();
+    this.connection!.send(JSON.stringify({
+      t: 'ready',
+      v: PROTOCOL_VERSION,
+      ...facts,
+      sessions: facts.sessions ?? list?.sessions,
+      pinned: facts.pinned ?? list?.pinned,
+    } satisfies HostFrame));
     this.bound = true;
   }
 
@@ -144,7 +162,14 @@ export class PetHub {
           if (welcome) {
             this.bound = true;
             this.opts.log('info', `Coopanion pet "${frame.name}" connected`);
-            ws.send(JSON.stringify({ t: 'ready', v: PROTOCOL_VERSION, ...welcome } satisfies HostFrame));
+            const list = this.opts.listSessions?.();
+            ws.send(JSON.stringify({
+              t: 'ready',
+              v: PROTOCOL_VERSION,
+              ...welcome,
+              sessions: welcome.sessions ?? list?.sessions,
+              pinned: welcome.pinned ?? list?.pinned,
+            } satisfies HostFrame));
           } else {
             this.opts.log('info', `Coopanion pet "${frame.name}" connected, waiting for a conversation`);
             // No `ready` yet — notifyBound() will send one when the caller has facts.
@@ -153,10 +178,12 @@ export class PetHub {
         }
         case 'say': {
           const text = frame.text.slice(0, SAY_MAX);
-          void this.opts.say(text, frame.from).then((refusal) => {
-            const ack: HostAck = refusal === null ? { t: 'accepted', id: frame.id } : { t: 'refused', id: frame.id, reason: refusal };
-            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(ack));
-          });
+          // Always answer, even when the caller throws: a pet waiting on an ack that never comes
+          // shows a spinner until its own timeout, with no idea which conversation it spoke into.
+          void this.opts.say(text, frame.from, frame.session).then(
+            (outcome) => this.ackSay(ws, frame.id, outcome),
+            (err: Error) => this.ackSay(ws, frame.id, { reason: `DSH failed to accept the message: ${err.message}` }),
+          );
           return;
         }
         case 'list-sessions': {
@@ -164,7 +191,7 @@ export class PetHub {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(
               list
-                ? { t: 'session-list', sessions: list.sessions, pinned: list.pinned } satisfies HostFrame
+                ? { t: 'session-list', sessions: list.sessions, pinned: list.pinned, owner: this.ownerOf(list) } satisfies HostFrame
                 : { t: 'error', text: 'this Host does not support listing sessions' } satisfies HostFrame,
             ));
           }
@@ -229,6 +256,36 @@ export class PetHub {
     } catch {
       // the socket is closing; the close handler clears it
     }
+  }
+
+  /** The conversation a `say` without a target would land in, from a session list. */
+  private ownerOf(list: { sessions: SessionSummary[]; owner?: string | null }): string | null {
+    if (list.owner !== undefined) return list.owner;
+    return list.sessions.find((session) => session.owner)?.id ?? null;
+  }
+
+  /**
+   * Answer one `say`.
+   *
+   * The ack repeats where the words went (`session`) and what the pet may switch to (`sessions`),
+   * so the pet never has to assume its line landed where it meant. A refusal additionally carries
+   * a `code` the pet can branch on and the same list, so recovering costs no extra round trip.
+   */
+  private ackSay(ws: WebSocket, id: string, outcome: SayOutcome): void {
+    if (ws.readyState !== ws.OPEN) return;
+    const list = this.opts.listSessions?.();
+    const sessions = list?.sessions;
+    const pinned = list?.pinned;
+    let ack: HostAck;
+    if (outcome === null) {
+      ack = { t: 'accepted', id, session: this.ownerOf(list ?? { sessions: [] }) ?? undefined, sessions, pinned };
+    } else if (typeof outcome === 'string') {
+      // A caller from before refusals had a shape: keep its sentence, add what we can infer.
+      ack = { t: 'refused', id, reason: outcome, sessions, pinned };
+    } else {
+      ack = { t: 'refused', id, reason: outcome.reason, code: outcome.code, session: outcome.session, sessions: outcome.sessions ?? sessions, pinned: outcome.pinned ?? pinned };
+    }
+    ws.send(JSON.stringify(ack));
   }
 }
 

@@ -1,5 +1,20 @@
 # 更新说明
 
+## 0.2.20 — 未发布
+
+- **修复"桌宠把消息发错会话"**：根因不在桌宠乱发，而在**两边都只能猜**。DSH 没有"当前聚焦会话"这个信号——在 DSH 里只是切标签页、不说话，一条 `session/event` 都不会发出（fatfish 0.6.11 的注释也记着同一件事）。于是 Host 只能把 `say` 投给它根据历史事件挑出的 newest-owner，那是个可能几小时没更新过的推测；桌宠按本地记住的目标发，两边一旦不同步，话就落进了 DSH 最后碰过的那个会话。这次把目标**显式化**，并在**说话那一刻**校验，而不是在瞄准那一刻：
+  - **`say` 可带 `session`（目标会话 id）**：带了就照办。Host 每次 `say` 都重新读实时列表，目标不在其中（已归档 / 已销毁 / 是子代理）就回 `refused` + `code: 'stale-session'` + 当前完整列表，**绝不悄悄回退到 owner**——静默改投正是发错会话的机制。不带 `session` 的旧桌宠行为完全不变（仍落 owner），所以**只升 Host 不会坏**
+  - **`accepted` 回执带落点**：`session`（这句话进了哪个会话）+ `sessions`（当时所有打开的会话）+ `pinned`。桌宠可以把落点显示给人看，发错了当场看得见，而不是靠事后翻会话
+  - **`refused` 带机器可读的 `code`**：`empty` / `nested-prefix` / `forwarding-off` / `no-session` / `stale-session` / `cannot-deliver` / `host-error`。桌宠不用解析英文句子就能决定下一步：`stale-session` → 从回执的列表里重选；`no-session` → `new`
+  - **`ready` 与会话开关时 push 完整列表**：`ready` 现在带 `sessions` / `pinned`，并且 `agent/created` 与 `session/disposed` 都会主动 push 一帧 `session-list`（带顶层 `owner`）。桌宠**一连上就知道**有哪些会话可选，不必先问一次；会话开了或关了，菜单也会自己更新——"发之前先确认会话列表"因此不再是一次额外往返
+  - **`list-sessions` 回帧顶层带 `owner`**：目标 `say` 会落进哪个会话，一眼可见，不用在数组里找 `owner: true`
+  - **Host 异常也会回执**：`say` 抛错时不再让桌宠干等满超时，而是回 `refused` 并说明原因
+- **「要不要新建会话」有了明确依据**：列表里没有任何一个可以指向的会话时（`no-session`，或列表为空）就该 `new`，而不是发一个指望 fallback 的 `say`。完整判断流程写在 `src/protocol.ts` 的 `SayOutcome` 上方注释里，是两边都要照着实现的契约
+- **去掉了两帧死代码**：`say` 成功/失败时发的 `notice`（`kind: 'forwarded'` / `forward-failed'`）桌宠侧从来没解析过（`parseHostFrame` 没有 `notice` 分支），落点信息现在由 `accepted` 回执承担，比多推一帧更靠得住
+- 兼容性：协议只做**追加**，`PROTOCOL_VERSION` 仍是 1；所有新字段可选，旧桌宠忽略它们照常工作
+- 桌宠侧对应改动：`cortico-world-fatfish` ≥ 0.6.22（`say` 带目标、发前核对列表、按 `code` 决定 `new`/重选/停止）。只升本插件不会坏，但要真正修掉发错会话，两边都要升
+- 测试：`tsc --noEmit` 通过；`vitest` **103 passed**（新增 13 项，涵盖"按名字投递而不是投给 owner"、"目标没了就拒收且不投递"、"无目标时仍投 owner"、"无会话时拒收并回空列表"、"首个 `ready` 带全量列表"、"会话开关 push 列表"、"`list-sessions` 顶层 owner"、Host 抛错仍回执）；`node scripts/smoke.mjs` 对**构建产物**跑 7 组端到端场景全通过；`dist/index.cjs` 已重建
+
 ## 0.2.19 — 已发布（GitHub Release）
 
 - **新建会话不再无限等待**：`createConversation` 对 `sessionController.commands.create` 加了 8 秒上限。此前这个调用没有任何超时，若 DSH 把新建排在正在跑的回合之后、或该版本命令形状变了而永不 resolve，插件就一直不回帧，桌宠干等 20 秒只能报「DSH did not answer in time」（讨论 [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) 里 YuYinDaJiang 的「开新会话接口超时」）。现在 8 秒即带原因失败，桌宠能把原因念出来，自动交接也不会被卡死

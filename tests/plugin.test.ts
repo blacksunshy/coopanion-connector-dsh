@@ -423,18 +423,75 @@ describe('a question the assistant asks', () => {
 });
 
 describe('a line from the pet', () => {
-  // Not covered yet: the success path through `agent/created` → `followup` does not register the
-  // agent under this fake context, and the cause is not yet known. Everything the path is built
-  // from is covered — `AgentRegistry` in protocol.test.ts, the socket and its `welcome` refusal in
-  // pet-hub.test.ts, and the message the line becomes below. The greeting needs no agent, so the
-  // two cases here still exercise the real socket.
-  it.skip('is submitted to the owning conversation', async () => {
+  it('is submitted to the conversation the pet names, not to a guess', async () => {
+    // Two conversations are open. The owner is the newest one — but the pet named the older one,
+    // and a name is an instruction: delivering to the owner instead is exactly the misroute this
+    // handshake exists to stop.
+    const older = agentOf('session-old');
+    const newer = agentOf('session-new');
     const { emit, connect } = await loaded();
-    emit('agent/created', { agent: agentOf('session-1') });
+    emit('agent/created', { agent: older });
+    emit('agent/created', { agent: newer });
     const { frames, send } = await connect();
     send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
-    await until(() => frames.length > 0);
-    send({ t: 'say', id: 'a1', text: '帮我看下构建', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'a1', text: '帮我看下构建', from: '大肥鱼', session: 'session-old' });
+    await until(() => frames.some((frame) => frame.t === 'accepted' || frame.t === 'refused'));
+    const ack = frames.find((frame) => frame.t === 'accepted' || frame.t === 'refused')!;
+    expect(ack).toMatchObject({ t: 'accepted', id: 'a1', session: 'session-old' });
+    expect(older.injected).toHaveLength(1);
+    expect(newer.injected).toHaveLength(0);
+  });
+
+  it('is refused with a readable code when the named conversation is gone', async () => {
+    const only = agentOf('session-1');
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: only });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'a2', text: '在吗', from: '大肥鱼', session: 'session-gone' });
+    await until(() => frames.some((frame) => frame.t === 'refused'));
+    const refused = frames.find((frame) => frame.t === 'refused')!;
+    expect(refused).toMatchObject({
+      t: 'refused',
+      id: 'a2',
+      code: 'stale-session',
+      session: 'session-1',
+      sessions: [{ id: 'session-1', owner: true }],
+    });
+    expect(refused.reason).toContain('no longer open');
+    // The words went nowhere: a refusal must not fall back to the owner.
+    expect(only.injected).toHaveLength(0);
+  });
+
+  it('still delivers to the owning conversation when the pet names none', async () => {
+    // The older pet contract carries no `session`; it must keep working exactly as before.
+    const owner = agentOf('session-1');
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: owner });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'a3', text: '老协议', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'accepted'));
+    expect(frames.find((frame) => frame.t === 'accepted')).toMatchObject({ t: 'accepted', session: 'session-1' });
+    expect(owner.injected).toHaveLength(1);
+  });
+
+  it('is refused, with the list, when nothing is open to speak into', async () => {
+    const { connect } = await loaded();
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await new Promise((done) => setTimeout(done, 100));
+    send({ t: 'say', id: 'a4', text: '有人吗', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'refused'));
+    expect(frames.find((frame) => frame.t === 'refused')).toMatchObject({
+      t: 'refused',
+      id: 'a4',
+      code: 'no-session',
+      sessions: [],
+    });
   });
 
   it('is refused when the pet speaks another protocol revision', async () => {
@@ -444,6 +501,56 @@ describe('a line from the pet', () => {
     const closed = new Promise<number>((done) => socket.once('close', (code) => done(code)));
     send({ t: 'hello', v: PROTOCOL_VERSION + 1, name: 'Coo' });
     expect(await closed).toBe(4002);
+  });
+});
+
+describe('what the pet is told about open conversations', () => {
+  it('gets the whole list on the first frame, without asking', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    emit('agent/created', { agent: agentOf('session-2') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    const ready = frames.find((frame) => frame.t === 'ready')!;
+    expect(ready).toMatchObject({ t: 'ready', session: 'session-2', pinned: false });
+    expect((ready.sessions as Array<{ id: string }>).map((entry) => entry.id)).toEqual(['session-1', 'session-2']);
+  });
+
+  it('is told again whenever the menu changes', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    const before = frames.filter((frame) => frame.t === 'session-list').length;
+    emit('agent/created', { agent: agentOf('session-2') });
+    await until(() => frames.filter((frame) => frame.t === 'session-list').length > before);
+    const pushed = frames.filter((frame) => frame.t === 'session-list').at(-1)!;
+    expect((pushed.sessions as Array<{ id: string }>).map((entry) => entry.id)).toEqual(['session-1', 'session-2']);
+
+    // A disposed conversation is a menu change too: the pet must stop aiming at it.
+    emit('session/disposed', { id: 'session-1' });
+    await until(() => {
+      const last = frames.filter((frame) => frame.t === 'session-list').at(-1)!;
+      return (last.sessions as Array<{ id: string }>).every((entry) => entry.id !== 'session-1');
+    });
+  });
+
+  it('answers an explicit list-sessions request with the owner named at the top', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    emit('agent/created', { agent: agentOf('session-2') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'list-sessions' });
+    await until(() => frames.some((frame) => frame.t === 'session-list'));
+    expect(frames.find((frame) => frame.t === 'session-list')).toMatchObject({
+      t: 'session-list',
+      owner: 'session-2',
+      pinned: false,
+    });
   });
 });
 

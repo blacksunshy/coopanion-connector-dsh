@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js
+// node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js"(exports2, module2) {
+  "node_modules/ws/lib/constants.js"(exports2, module2) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -57,10 +57,11 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js
+// node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
+  "node_modules/ws/lib/buffer-util.js"(exports2, module2) {
     "use strict";
+    var { websocketMask, websocketUnmask } = require("http");
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
     function concat(list, totalLength) {
@@ -115,7 +116,16 @@ var require_buffer_util = __commonJS({
       toBuffer,
       unmask: _unmask
     };
-    if (!process.env.WS_NO_BUFFER_UTIL) {
+    if (websocketMask) {
+      module2.exports.mask = function(source, mask, output, offset, length) {
+        if (length < 24) _mask(source, mask, output, offset, length);
+        else websocketMask(source, mask, output, offset, length);
+      };
+      module2.exports.unmask = function(buffer, mask) {
+        if (buffer.length < 24) _unmask(buffer, mask);
+        else websocketUnmask(buffer, mask);
+      };
+    } else if (!process.env.WS_NO_BUFFER_UTIL) {
       try {
         const bufferUtil = require("bufferutil");
         module2.exports.mask = function(source, mask, output, offset, length) {
@@ -132,9 +142,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js
+// node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js"(exports2, module2) {
+  "node_modules/ws/lib/limiter.js"(exports2, module2) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -182,9 +192,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js
+// node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
+  "node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
     "use strict";
     var zlib = require("zlib");
     var bufferUtil = require_buffer_util();
@@ -565,9 +575,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js
+// node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js"(exports2, module2) {
+  "node_modules/ws/lib/validation.js"(exports2, module2) {
     "use strict";
     var { isUtf8 } = require("buffer");
     var { hasBlob } = require_constants();
@@ -766,9 +776,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js
+// node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js"(exports2, module2) {
+  "node_modules/ws/lib/receiver.js"(exports2, module2) {
     "use strict";
     var { Writable } = require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -1178,6 +1188,7 @@ var require_receiver = __commonJS({
             unmask(data, this._mask);
           }
         }
+        this._mask = void 0;
         if (this._opcode > 7) {
           this.controlMessage(data, cb);
           return;
@@ -1389,9 +1400,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js
+// node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js"(exports2, module2) {
+  "node_modules/ws/lib/sender.js"(exports2, module2) {
     "use strict";
     var { Duplex } = require("stream");
     var { randomFillSync } = require("crypto");
@@ -1510,12 +1521,15 @@ var require_sender = __commonJS({
           target[2] = target[3] = 0;
           target.writeUIntBE(dataLength, 4, 6);
         }
-        if (!options.mask) return [target, data];
+        if (!options.mask) {
+          return dataLength ? [target, data] : [target];
+        }
         target[1] |= 128;
         target[offset - 4] = mask[0];
         target[offset - 3] = mask[1];
         target[offset - 2] = mask[2];
         target[offset - 1] = mask[3];
+        if (!dataLength) return [target];
         if (skipMasking) return [target, data];
         if (merge) {
           applyMask(data, mask, target, offset, dataLength);
@@ -1882,9 +1896,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js
+// node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js"(exports2, module2) {
+  "node_modules/ws/lib/event-target.js"(exports2, module2) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -2111,9 +2125,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js
+// node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js"(exports2, module2) {
+  "node_modules/ws/lib/extension.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -2264,14 +2278,15 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js
+// node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var https = require("https");
     var http = require("http");
     var net = require("net");
+    var querystring = require("querystring");
     var tls = require("tls");
     var { randomBytes, createHash } = require("crypto");
     var { Duplex, Readable } = require("stream");
@@ -2798,10 +2813,9 @@ var require_websocket = __commonJS({
           throw new SyntaxError(`Invalid URL: ${address}`);
         }
       }
-      if (parsedUrl.protocol === "http:") {
-        parsedUrl.protocol = "ws:";
-      } else if (parsedUrl.protocol === "https:") {
-        parsedUrl.protocol = "wss:";
+      if (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") {
+        parsedUrl = new URL(parsedUrl);
+        parsedUrl.protocol = parsedUrl.protocol === "http:" ? "ws:" : "wss:";
       }
       websocket._url = parsedUrl.href;
       const isSecure = parsedUrl.protocol === "wss:";
@@ -2870,12 +2884,19 @@ var require_websocket = __commonJS({
         }
       }
       if (parsedUrl.username || parsedUrl.password) {
-        opts.auth = `${parsedUrl.username}:${parsedUrl.password}`;
+        const username = querystring.unescape(parsedUrl.username);
+        const password = querystring.unescape(parsedUrl.password);
+        opts.auth = `${username}:${password}`;
       }
       if (isIpcUrl) {
-        const parts = opts.path.split(":");
-        opts.socketPath = parts[0];
-        opts.path = parts[1];
+        const i = opts.path.indexOf(":");
+        if (i === -1) {
+          opts.socketPath = opts.path;
+          opts.path = "";
+        } else {
+          opts.socketPath = opts.path.slice(0, i);
+          opts.path = opts.path.slice(i + 1);
+        }
       }
       let req;
       if (opts.followRedirects) {
@@ -3070,8 +3091,13 @@ var require_websocket = __commonJS({
     function receiverOnConclude(code, reason2) {
       const websocket = this[kWebSocket];
       websocket._closeFrameReceived = true;
-      websocket._closeMessage = reason2;
       websocket._closeCode = code;
+      if (reason2.length === 0) {
+        websocket._closeMessage = EMPTY_BUFFER;
+      } else {
+        websocket._closeMessage = Buffer.allocUnsafeSlow(reason2.length);
+        websocket._closeMessage.set(reason2);
+      }
       if (websocket._socket[kWebSocket] === void 0) return;
       websocket._socket.removeListener("data", socketOnData);
       process.nextTick(resume, websocket._socket);
@@ -3173,9 +3199,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js
+// node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js"(exports2, module2) {
+  "node_modules/ws/lib/stream.js"(exports2, module2) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = require("stream");
@@ -3271,9 +3297,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js
+// node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
+  "node_modules/ws/lib/subprotocol.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -3316,9 +3342,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js
+// node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var http = require("http");
@@ -3736,7 +3762,7 @@ module.exports = __toCommonJS(index_exports);
 var import_node_crypto = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
+// node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
 var import_extension = __toESM(require_extension(), 1);
 var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -3763,7 +3789,8 @@ function parsePetFrame(raw) {
     case "say": {
       if (typeof frame.id !== "string" || typeof frame.text !== "string") return null;
       const from = typeof frame.from === "string" && frame.from.trim() ? frame.from : "the pet";
-      return { t: "say", id: frame.id.slice(0, 64), text: frame.text, from: from.slice(0, 64) };
+      const session = typeof frame.session === "string" && frame.session.trim() ? frame.session.trim().slice(0, 128) : void 0;
+      return { t: "say", id: frame.id.slice(0, 64), text: frame.text, from: from.slice(0, 64), session };
     }
     case "ping":
       return { t: "ping" };
@@ -3889,7 +3916,14 @@ var PetHub = class {
   notifyBound(facts) {
     if (!this.connected) return;
     this.opts.log("info", `DSH bridge bound to session ${facts.session}`);
-    this.connection.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...facts }));
+    const list = this.opts.listSessions?.();
+    this.connection.send(JSON.stringify({
+      t: "ready",
+      v: PROTOCOL_VERSION,
+      ...facts,
+      sessions: facts.sessions ?? list?.sessions,
+      pinned: facts.pinned ?? list?.pinned
+    }));
     this.bound = true;
   }
   /** Tells the pet the owning conversation is gone (disposed / subagent filtered out).
@@ -3934,7 +3968,14 @@ var PetHub = class {
           if (welcome) {
             this.bound = true;
             this.opts.log("info", `Coopanion pet "${frame.name}" connected`);
-            ws.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...welcome }));
+            const list = this.opts.listSessions?.();
+            ws.send(JSON.stringify({
+              t: "ready",
+              v: PROTOCOL_VERSION,
+              ...welcome,
+              sessions: welcome.sessions ?? list?.sessions,
+              pinned: welcome.pinned ?? list?.pinned
+            }));
           } else {
             this.opts.log("info", `Coopanion pet "${frame.name}" connected, waiting for a conversation`);
           }
@@ -3942,17 +3983,17 @@ var PetHub = class {
         }
         case "say": {
           const text = frame.text.slice(0, SAY_MAX);
-          void this.opts.say(text, frame.from).then((refusal) => {
-            const ack = refusal === null ? { t: "accepted", id: frame.id } : { t: "refused", id: frame.id, reason: refusal };
-            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(ack));
-          });
+          void this.opts.say(text, frame.from, frame.session).then(
+            (outcome) => this.ackSay(ws, frame.id, outcome),
+            (err) => this.ackSay(ws, frame.id, { reason: `DSH failed to accept the message: ${err.message}` })
+          );
           return;
         }
         case "list-sessions": {
           const list = this.opts.listSessions?.();
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(
-              list ? { t: "session-list", sessions: list.sessions, pinned: list.pinned } : { t: "error", text: "this Host does not support listing sessions" }
+              list ? { t: "session-list", sessions: list.sessions, pinned: list.pinned, owner: this.ownerOf(list) } : { t: "error", text: "this Host does not support listing sessions" }
             ));
           }
           return;
@@ -4006,6 +4047,33 @@ var PetHub = class {
       this.connection.ping();
     } catch {
     }
+  }
+  /** The conversation a `say` without a target would land in, from a session list. */
+  ownerOf(list) {
+    if (list.owner !== void 0) return list.owner;
+    return list.sessions.find((session) => session.owner)?.id ?? null;
+  }
+  /**
+   * Answer one `say`.
+   *
+   * The ack repeats where the words went (`session`) and what the pet may switch to (`sessions`),
+   * so the pet never has to assume its line landed where it meant. A refusal additionally carries
+   * a `code` the pet can branch on and the same list, so recovering costs no extra round trip.
+   */
+  ackSay(ws, id, outcome) {
+    if (ws.readyState !== ws.OPEN) return;
+    const list = this.opts.listSessions?.();
+    const sessions = list?.sessions;
+    const pinned = list?.pinned;
+    let ack;
+    if (outcome === null) {
+      ack = { t: "accepted", id, session: this.ownerOf(list ?? { sessions: [] }) ?? void 0, sessions, pinned };
+    } else if (typeof outcome === "string") {
+      ack = { t: "refused", id, reason: outcome, sessions, pinned };
+    } else {
+      ack = { t: "refused", id, reason: outcome.reason, code: outcome.code, session: outcome.session, sessions: outcome.sessions ?? sessions, pinned: outcome.pinned ?? pinned };
+    }
+    ws.send(JSON.stringify(ack));
   }
 };
 
@@ -4355,7 +4423,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.19") return "0.2.19";
+  if ("0.2.20") return "0.2.20";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4718,6 +4786,10 @@ var plugin_default = {
     const notify = (frame) => {
       hub?.send(frame);
     };
+    const pushSessions = () => {
+      if (!hub?.connected) return;
+      hub.send({ t: "session-list", sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession });
+    };
     const workspaceRows = () => {
       const registry = root.get("workspaceRegistry");
       const workspaces = registry?.list?.() ?? [];
@@ -4766,36 +4838,76 @@ var plugin_default = {
               }
               knownCwd = facts.cwd || knownCwd;
               debug("welcome-ok", facts);
-              return facts;
+              return { ...facts, sessions: agents.listSessions(), pinned: agents.isPinned };
             },
-            say: async (text, from) => {
+            say: async (text, from, target) => {
               const body = text.trim();
-              if (!body) return "empty message";
-              if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
-              if (!agents.forwarding) return "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel";
+              if (!body) return { reason: "empty message", code: "empty" };
+              if (carriesBridgePrefix(body)) {
+                return { reason: "this line already carries the bridge's prefix, so a second one would be nested around it", code: "nested-prefix" };
+              }
+              if (!agents.forwarding) {
+                return { reason: "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel", code: "forwarding-off" };
+              }
+              const sessions = agents.listSessions();
+              const live = new Set(sessions.filter((session) => !session.subagent).map((session) => session.id));
+              const ownerSession = agents.ownerSession;
+              if (target !== void 0) {
+                if (!live.has(target)) {
+                  debug("say-refused-stale-target", { target, ownerSession, liveCount: live.size });
+                  return {
+                    reason: `conversation ${target} is no longer open (it was archived, disposed, or was a subagent); pick one of the open conversations before speaking`,
+                    code: "stale-session",
+                    session: ownerSession,
+                    sessions,
+                    pinned: agents.isPinned
+                  };
+                }
+                if (target !== ownerSession && !agents.forceOwner(target)) {
+                  return {
+                    reason: `conversation ${target} could not be made the owner; pick it again`,
+                    code: "stale-session",
+                    session: ownerSession,
+                    sessions,
+                    pinned: agents.isPinned
+                  };
+                }
+                if (target !== ownerSession) {
+                  const facts = agents.facts();
+                  if (facts && hub?.connected) hub.notifyBound(facts);
+                }
+              }
               const agent = agents.owner;
               if (!agent) {
                 debug("say-refused-no-owner", {
                   liveCount: agents.liveSize,
-                  ownerSession: agents.ownerSession,
+                  ownerSession,
                   isPinned: agents.isPinned,
                   forwarding: agents.forwarding
                 });
-                return "no conversation is open on the DSH side; a new one can be started with dsh_new_session";
+                return {
+                  reason: "no conversation is open on the DSH side; create one before speaking",
+                  code: "no-session",
+                  session: null,
+                  sessions,
+                  pinned: agents.isPinned
+                };
               }
-              if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
+              if (typeof agent.followup !== "function") {
+                return { reason: "this DSH build cannot accept a message here", code: "cannot-deliver", session: ownerSession, sessions };
+              }
+              const delivered = agents.ownerSession;
               try {
                 await resolveFactory();
                 agent.followup(buildUserMessage(`${from}\uFF08\u901A\u8FC7\u684C\u5BA0\uFF09\u8BF4\uFF1A${body}`, userTemplate));
-                hub?.send({ t: "notice", kind: "forwarded", text: `\u5DF2\u9012\u9001\u5230 DSH\uFF08\u4F1A\u8BDD ${agents.ownerSession ?? "?"}\uFF09\uFF1A${body.slice(0, 80)}${body.length > 80 ? "\u2026" : ""}` });
                 return null;
               } catch (err) {
-                hub?.send({ t: "notice", kind: "forward-failed", text: `\u9012\u9001\u5931\u8D25\uFF1A${err.message}` });
-                return `DSH refused the message: ${err.message}`;
+                debug("say-failed", { session: delivered, error: err.message });
+                return { reason: `DSH refused the message: ${err.message}`, code: "host-error", session: delivered, sessions };
               }
             },
             pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
-            listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+            listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession }),
             unpin: () => {
               agents.clearPin();
               return null;
@@ -5120,6 +5232,7 @@ var plugin_default = {
       agents.add(String(id), agent);
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);
+      pushSessions();
     }));
     root.on("session/disposed", ((session) => {
       const id = session?.id;
@@ -5131,6 +5244,7 @@ var plugin_default = {
         if (facts) hub.notifyBound(facts);
         else hub.notifyUnbound();
       }
+      pushSessions();
     }));
     root.on("session/event", ((session, event) => {
       const id = String(session?.id ?? "");

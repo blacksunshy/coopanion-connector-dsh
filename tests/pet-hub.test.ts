@@ -83,6 +83,42 @@ describe('a pet connection', () => {
     expect(ready).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1', model: 'deepseek-flash' });
   });
 
+  it('is handed every open conversation on the first frame, so it never has to guess', async () => {
+    const sessions = [
+      { id: 'session-1', cwd: '/work', model: 'm', owner: true, pinned: false, subagent: false },
+      { id: 'session-2', cwd: '/other', model: 'm', owner: false, pinned: false, subagent: false },
+    ];
+    const { url } = await listening({ listSessions: () => ({ sessions, pinned: false, owner: 'session-1' }) });
+    const { ready } = await greeted(url);
+    expect(ready).toMatchObject({
+      t: 'ready',
+      session: 'session-1',
+      pinned: false,
+      sessions: [{ id: 'session-1', owner: true }, { id: 'session-2', owner: false }],
+    });
+  });
+
+  it('repeats the whole list on a later owner change', async () => {
+    const sessions = [{ id: 'session-9', cwd: '/work', model: 'm', owner: true, pinned: true, subagent: false }];
+    const { hub, url } = await listening({ listSessions: () => ({ sessions, pinned: true, owner: 'session-9' }) });
+    const { socket } = await greeted(url);
+    const late = next(socket);
+    hub.notifyBound({ session: 'session-9', cwd: '/work', model: 'm' });
+    expect(await late).toMatchObject({ t: 'ready', session: 'session-9', pinned: true, sessions: [{ id: 'session-9' }] });
+  });
+
+  it('answers list-sessions with the owner named at the top level', async () => {
+    const sessions = [
+      { id: 'session-1', cwd: '/work', model: 'm', owner: false, pinned: false, subagent: false },
+      { id: 'session-2', cwd: '/other', model: 'm', owner: true, pinned: false, subagent: false },
+    ];
+    const { url } = await listening({ listSessions: () => ({ sessions, pinned: false, owner: 'session-2' }) });
+    const { socket } = await greeted(url);
+    const frame = next(socket);
+    socket.send(JSON.stringify({ t: 'list-sessions' }));
+    expect(await frame).toMatchObject({ t: 'session-list', owner: 'session-2', pinned: false, sessions: [{ id: 'session-1' }, { id: 'session-2' }] });
+  });
+
   it('is refused when this Host speaks another protocol revision', async () => {
     const { url } = await listening();
     const socket = new WebSocket(url);
@@ -144,7 +180,46 @@ describe('a pet that speaks', () => {
     socket.send(JSON.stringify({ t: 'say', id: 'abc', text: '让桌宠说句话', from: '大肥鱼' }));
     expect(await ack).toEqual({ t: 'accepted', id: 'abc' });
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say).toHaveBeenCalledWith('让桌宠说句话', '大肥鱼');
+    // No `session` on the frame: the older pet contract, still accepted, target is undefined.
+    expect(say).toHaveBeenCalledWith('让桌宠说句话', '大肥鱼', undefined);
+  });
+
+  it('hands the Host the conversation it named', async () => {
+    const say = vi.fn(async () => null);
+    const { url } = await listening({ say });
+    const { socket } = await greeted(url);
+    const ack = next(socket);
+    socket.send(JSON.stringify({ t: 'say', id: 'abc', text: 'hi', from: 'person', session: 'session-7' }));
+    await ack;
+    expect(say).toHaveBeenCalledWith('hi', 'person', 'session-7');
+  });
+
+  it('repeats which conversation took the words, and what else is open', async () => {
+    const say = vi.fn(async () => null);
+    const { url } = await listening({
+      say,
+      listSessions: () => ({
+        sessions: [
+          { id: 'session-1', cwd: '/work', model: 'm', owner: true, pinned: false, subagent: false },
+          { id: 'session-2', cwd: '/other', model: 'm', owner: false, pinned: false, subagent: false },
+        ],
+        pinned: false,
+        owner: 'session-1',
+      }),
+    });
+    const { socket } = await greeted(url);
+    const ack = next(socket);
+    socket.send(JSON.stringify({ t: 'say', id: 'abc', text: 'hi', from: 'person', session: 'session-1' }));
+    expect(await ack).toMatchObject({
+      t: 'accepted',
+      id: 'abc',
+      session: 'session-1',
+      pinned: false,
+      sessions: [
+        { id: 'session-1', owner: true },
+        { id: 'session-2', owner: false },
+      ],
+    });
   });
 
   it('is told why the Host refused', async () => {
@@ -153,6 +228,38 @@ describe('a pet that speaks', () => {
     const ack = next(socket);
     socket.send(JSON.stringify({ t: 'say', id: 'abc', text: 'hi', from: 'person' }));
     expect(await ack).toEqual({ t: 'refused', id: 'abc', reason: 'no conversation is open on the DSH side' });
+  });
+
+  it('carries a machine-readable reason so the pet can recover', async () => {
+    const sessions = [{ id: 'session-1', cwd: '/work', model: 'm', owner: true, pinned: false, subagent: false }];
+    const { url } = await listening({
+      say: async () => ({
+        reason: 'conversation session-9 is no longer open; pick one of the open conversations before speaking',
+        code: 'stale-session' as const,
+        session: 'session-1',
+        sessions,
+        pinned: false,
+      }),
+      listSessions: () => ({ sessions, pinned: false, owner: 'session-1' }),
+    });
+    const { socket } = await greeted(url);
+    const ack = next(socket);
+    socket.send(JSON.stringify({ t: 'say', id: 'abc', text: 'hi', from: 'person', session: 'session-9' }));
+    expect(await ack).toMatchObject({
+      t: 'refused',
+      id: 'abc',
+      code: 'stale-session',
+      session: 'session-1',
+      sessions: [{ id: 'session-1', owner: true }],
+    });
+  });
+
+  it('is answered even when the Host throws, instead of leaving the pet waiting', async () => {
+    const { url } = await listening({ say: async () => { throw new Error('agent exploded'); } });
+    const { socket } = await greeted(url);
+    const ack = next(socket);
+    socket.send(JSON.stringify({ t: 'say', id: 'abc', text: 'hi', from: 'person' }));
+    expect(await ack).toMatchObject({ t: 'refused', id: 'abc', reason: 'DSH failed to accept the message: agent exploded' });
   });
 
   it('drops a frame that is not a known one', async () => {
@@ -168,7 +275,7 @@ describe('a pet that speaks', () => {
     socket.send(JSON.stringify({ t: 'say', id: '2', text: 'still here', from: 'person' }));
     expect(await ack).toEqual({ t: 'accepted', id: '2' });
     expect(say).toHaveBeenCalledTimes(1);
-    expect(say).toHaveBeenCalledWith('still here', 'person');
+    expect(say).toHaveBeenCalledWith('still here', 'person', undefined);
   });
 });
 
