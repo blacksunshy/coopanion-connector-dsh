@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '../src/pet-hub.ts';
 import { SAY_MAX, argumentNames, assistantText, carriesBridgePrefix, parsePetFrame, questionTextOf, reasonText } from '../src/protocol.ts';
-import { AgentRegistry, isActiveSessionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
+import { AgentRegistry, isPersonActionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
 
 describe('a frame from the pet', () => {
   it('is read when it is one this Host knows', () => {
@@ -264,21 +264,27 @@ describe('which conversation the pet speaks into', () => {
     });
   });
 
-  describe('active-event detection', () => {
-    it('picks the six event types that mean real work happened on this session', () => {
-      expect(isActiveSessionEvent({ type: 'user/message' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'assistant/message' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'turn/start' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'turn/end' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'tool/call' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'approval/asked' })).toBe(true);
+  describe('person-action detection', () => {
+    it('picks the events a person makes on a session', () => {
+      expect(isPersonActionEvent({ type: 'user/message' })).toBe(true);
+      expect(isPersonActionEvent({ type: 'approval/decided' })).toBe(true);
+    });
+
+    it('ignores the model working, so a reply elsewhere cannot steal the owner', () => {
+      // Every one of these is the model acting, and a model acts wherever a line was handed to it.
+      // Following them is how a pinned conversation lost its pin to whatever answered last.
+      expect(isPersonActionEvent({ type: 'assistant/message' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'turn/start' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'turn/end' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'tool/call' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'approval/asked' })).toBe(false);
     });
 
     it('ignores request/header, unknown types, and missing type', () => {
-      expect(isActiveSessionEvent({ type: 'request/header', data: { header: { config: { model: 'x' } } } })).toBe(false);
-      expect(isActiveSessionEvent({ type: 'step/start' })).toBe(false);
-      expect(isActiveSessionEvent({ type: 'banana' })).toBe(false);
-      expect(isActiveSessionEvent({})).toBe(false);
+      expect(isPersonActionEvent({ type: 'request/header', data: { header: { config: { model: 'x' } } } })).toBe(false);
+      expect(isPersonActionEvent({ type: 'step/start' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'banana' })).toBe(false);
+      expect(isPersonActionEvent({})).toBe(false);
     });
   });
 });

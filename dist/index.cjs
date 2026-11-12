@@ -4180,15 +4180,15 @@ var AgentRegistry = class {
     return true;
   }
   /**
-   * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
-   * or the model replied there. Silent navigation (no events from the target session) does not
-   * trigger a move — this only reacts to real activity. Returns true when moved, false when the
-   * session is not live, it is a subagent, or it is already the owner.
+   * Auto-follow: snaps the owner to `id` because **the person** acted there (`isPersonActionEvent`
+   * is the only caller's gate). The model working on a session never calls this. Returns true when
+   * moved, false when the session is not live, it is a subagent, or it is already the owner.
    *
-   * When it *does* move, it also clears the pin. A pin was either set explicitly (pet said "hold
-   * this one") or accumulated as a side effect of the pet syncing its own owner — the user's
-   * active behaviour on another session is a stronger signal, so the old pin falls away. The pin
-   * still protects against `agent/created` stealing, which is what it was built for.
+   * When it does move, it also clears the pin. A pin was set either explicitly (the pet named this
+   * conversation) or as a side effect of syncing the pet's own owner — the person speaking
+   * elsewhere right now is a stronger signal about where the person is looking, so the old pin
+   * falls away and the pet follows. The pin still protects against `agent/created` stealing and
+   * against the model's own output, which is what it is for.
    */
   forceOwner(id) {
     if (id === this.ownerId) return false;
@@ -4256,17 +4256,16 @@ var AgentRegistry = class {
     return this.modelCache.get(sessionId) ?? "";
   }
 };
-var ACTIVE_EVENT_TYPES = /* @__PURE__ */ new Set([
+var PERSON_ACTION_EVENT_TYPES = /* @__PURE__ */ new Set([
   "user/message",
-  "assistant/message",
-  "turn/start",
-  "turn/end",
-  "tool/call",
-  "approval/asked"
+  // DSH appends this pair around a permission request: `approval/asked` when it asks, and
+  // `approval/decided` when the answer is written. Only a person answers, so it is a person's mark
+  // on the conversation even though the dsh app records it.
+  "approval/decided"
 ]);
-function isActiveSessionEvent(event) {
+function isPersonActionEvent(event) {
   const t = event?.type;
-  return typeof t === "string" && ACTIVE_EVENT_TYPES.has(t);
+  return typeof t === "string" && PERSON_ACTION_EVENT_TYPES.has(t);
 }
 function noticeOf(sessionId, event) {
   const data = event.data ?? {};
@@ -4423,7 +4422,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.20") return "0.2.20";
+  if ("0.2.21") return "0.2.21";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -5256,12 +5255,13 @@ var plugin_default = {
         return;
       }
       debug("session-event", { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
-      if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
+      if (agents.ownerSession !== id && isPersonActionEvent(event)) {
         const agent = agents.liveGet(id);
         debug("auto-follow-check", { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {
+          const wasPinned = agents.isPinned;
           if (agents.forceOwner(id)) {
-            debug("auto-follow-moved", { newOwner: id });
+            debug("auto-follow-moved", { newOwner: id, wasPinned });
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);
           }

@@ -164,15 +164,15 @@ export class AgentRegistry {
   }
 
   /**
-   * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
-   * or the model replied there. Silent navigation (no events from the target session) does not
-   * trigger a move — this only reacts to real activity. Returns true when moved, false when the
-   * session is not live, it is a subagent, or it is already the owner.
+   * Auto-follow: snaps the owner to `id` because **the person** acted there (`isPersonActionEvent`
+   * is the only caller's gate). The model working on a session never calls this. Returns true when
+   * moved, false when the session is not live, it is a subagent, or it is already the owner.
    *
-   * When it *does* move, it also clears the pin. A pin was either set explicitly (pet said "hold
-   * this one") or accumulated as a side effect of the pet syncing its own owner — the user's
-   * active behaviour on another session is a stronger signal, so the old pin falls away. The pin
-   * still protects against `agent/created` stealing, which is what it was built for.
+   * When it does move, it also clears the pin. A pin was set either explicitly (the pet named this
+   * conversation) or as a side effect of syncing the pet's own owner — the person speaking
+   * elsewhere right now is a stronger signal about where the person is looking, so the old pin
+   * falls away and the pet follows. The pin still protects against `agent/created` stealing and
+   * against the model's own output, which is what it is for.
    */
   forceOwner(id: string): boolean {
     if (id === this.ownerId) return false;
@@ -253,21 +253,30 @@ export interface SessionEventLike {
   data?: unknown;
 }
 
-/** Active session events that indicate the person or the model is talking on this session —
- *  trigger auto-follow when they come from a non-owner, non-pinned registry. */
-const ACTIVE_EVENT_TYPES = new Set<string>([
+/**
+ * The events that mean **the person** acted on a session — and therefore that they are looking at
+ * it right now, which is the only thing allowed to move the auto-follow owner.
+ *
+ * `assistant/message`, `turn/start`, `turn/end` and `tool/call` deliberately are *not* here. They
+ * are the model working, and a model works wherever a line was handed to it: a pet that pinned a
+ * conversation lost that pin the moment the agent replied anywhere else, and a conversation nobody
+ * had touched grabbed the owner just by finishing a turn. A pet then announced the wrong
+ * "a line lands here by default" and the person's next line went to the wrong window — the exact
+ * failure this module exists to prevent. Speech is the person's signal; the model's own output is
+ * not evidence about where the person is looking.
+ */
+const PERSON_ACTION_EVENT_TYPES = new Set<string>([
   'user/message',
-  'assistant/message',
-  'turn/start',
-  'turn/end',
-  'tool/call',
-  'approval/asked',
+  // DSH appends this pair around a permission request: `approval/asked` when it asks, and
+  // `approval/decided` when the answer is written. Only a person answers, so it is a person's mark
+  // on the conversation even though the dsh app records it.
+  'approval/decided',
 ]);
 
-/** Whether `event` is one of the active-event types that moves the auto-follow owner. */
-export function isActiveSessionEvent(event: SessionEventLike): boolean {
+/** Whether `event` is a person action on this session, which may move the auto-follow owner. */
+export function isPersonActionEvent(event: SessionEventLike): boolean {
   const t = event?.type;
-  return typeof t === 'string' && ACTIVE_EVENT_TYPES.has(t);
+  return typeof t === 'string' && PERSON_ACTION_EVENT_TYPES.has(t);
 }
 
 /** A notice for the pet derived from one session event, or null when the event is not the pet's business. */

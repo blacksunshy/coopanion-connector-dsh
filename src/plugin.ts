@@ -18,7 +18,7 @@ import type { Duplex } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
-import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
+import { AgentRegistry, isPersonActionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
 import { readForwardState, writeForwardState } from './forward-state.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, questionTextOf, reasonText, type HostFrame } from './protocol.ts';
 import { createConversation, type SessionCommandsLike, type WorkspaceLike } from './new-session.ts';
@@ -1010,16 +1010,18 @@ export default {
         return;
       }
       debug('session-event', { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
-      // Auto-follow：当一个已经存在的会话开始活跃（用户说话 / 模型回复 / 工具调用 / 审批），
-      // 而桌宠还在跟着另一个会话时，把 owner 切过来，让桌宠的 status 和转发目标都对齐到
-      // 用户当前在 DSH 里真正操作的那个会话。forceOwner 内部会把 pinned 清掉——用户在别的
-      // 会话说话这个行为，比之前的 pin（无论显式还是桌宠同步来的）表达更强的当前意图。
-      if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
+      // Auto-follow：只对**人真的动手**的事件生效（用户说话、答复审批）。
+      // 模型的输出（assistant/message、turn/start、turn/end、tool/call）刻意不算：模型在哪干活
+      // 不等于人在哪看。桌宠刚指名把话交给 A，我在 B 里继续回了几条，owner 就跟着 B 走、pin 也被
+      // 清掉 —— 那正是「默认送到这里」标错、下一句发错会话的成因。人的动作仍然比 pin 强：
+      // 那是一个人当场表达的位置，所以 forceOwner 照旧会清 pin，让标记不会悄悄跟着挪到别的会话。
+      if (agents.ownerSession !== id && isPersonActionEvent(event)) {
         const agent = agents.liveGet(id);
         debug('auto-follow-check', { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {
+          const wasPinned = agents.isPinned;
           if (agents.forceOwner(id)) {
-            debug('auto-follow-moved', { newOwner: id });
+            debug('auto-follow-moved', { newOwner: id, wasPinned });
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);
           }

@@ -1,5 +1,15 @@
 # 更新说明
 
+## 0.2.21 — 未发布
+
+- **修复：模型自己的输出会抢走归属，把刚固定好的会话冲掉**（0.2.20 装机实测发现）。自动跟随此前只要看到"这个会话里有活动"就把 owner 挪过去，而 `assistant/message`、`turn/start`、`turn/end`、`tool/call` 全算活动——于是桌宠刚 `pick` 到 A，模型在 B 里继续回几条，owner 就被抢回 B 并连带清掉 pin：`dsh_sessions` 的「默认送到这里」标错、下一句话跟着发错，正是 0.2.20 想修掉的那个毛病的残留路径。现在只有**人**的动作才触发跟随：
+  - `user/message`（人真的在那里打字/说话）
+  - `approval/decided`（人给出的批准结论；`approval/asked` 只是系统在问，不算）
+  - 模型在哪干活不等于人在哪看——这条界线由 `src/session-watch.ts` 的 `isPersonActionEvent` 一处守住，`isActiveSessionEvent` 随之移除
+  - `forceOwner` 的语义不变：判定「人此刻在别处说话」时仍清掉旧 pin，因为那比一个几小时前的固定更强；变的只是谁能进这道门
+- 桌宠侧配套：`cortico-world-fatfish` ≥ 0.6.23 把 `dsh_sessions` 的标记拆成「你就指着这里」（桌宠自己的固定）与「默认送到这里」（Host 的 owner），两者分开显示——否则人在别处说话后，桌宠会把 Host 的落点当成自己的目标
+- 测试：`tsc --noEmit` 通过；`vitest` **104 passed**（新增「模型自己的输出不算人的动作」：`assistant/message` / `turn/start` / `turn/end` / `tool/call` / `approval/asked` 全部为否，`user/message` 与 `approval/decided` 为是）；`node scripts/smoke.mjs` 7 组端到端场景全通过；`dist/index.cjs` 已重建
+
 ## 0.2.20 — 未发布
 
 - **修复"桌宠把消息发错会话"**：根因不在桌宠乱发，而在**两边都只能猜**。DSH 没有"当前聚焦会话"这个信号——在 DSH 里只是切标签页、不说话，一条 `session/event` 都不会发出（fatfish 0.6.11 的注释也记着同一件事）。于是 Host 只能把 `say` 投给它根据历史事件挑出的 newest-owner，那是个可能几小时没更新过的推测；桌宠按本地记住的目标发，两边一旦不同步，话就落进了 DSH 最后碰过的那个会话。这次把目标**显式化**，并在**说话那一刻**校验，而不是在瞄准那一刻：

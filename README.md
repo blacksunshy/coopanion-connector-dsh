@@ -108,6 +108,7 @@ pnpm run build          # 产出 dist/index.cjs
 | 新建会话可指定工作区（`new.workspace` / `list-workspaces`，`created.workspace` 回执） | **≥ 0.2.14** | **≥ 0.6.14**（旧 Host 静默忽略 `workspace` 时桌宠报「无法确认」而非假装成功） |
 | `turn-end` 上报上下文用量（`used` / `size`），桌宠侧用量到 90% 自动新建会话并交接 | **≥ 0.2.18** | **≥ 0.6.19**（Host 不报用量时回退 400 轮兜底，每会话最多交接一次） |
 | **发错会话修复**：`say` 可带目标 `session`；每次 `say` 重新校验实时列表并对失效目标拒收（不回退到 owner）；`accepted` / `refused` 带 `session` + `sessions` + `code`；`ready` 与会话开关时 push 完整列表；`list-sessions` 顶层带 `owner` | **≥ 0.2.20** | **≥ 0.6.22**（旧桌宠不带 `session` 时 Host 保持旧的 owner 行为，所以**只升 Host 不会坏**；但要真正修掉发错会话，桌宠也必须升） |
+| **自动跟随只认人的动作**：`assistant/message`、`turn/start`、`turn/end`、`tool/call` 不再抢走归属，只有 `user/message` 与 `approval/decided` 会 | **≥ 0.2.21** | **≥ 0.6.23**（桌宠侧同时把「你就指着这里」与「默认送到这里」拆成两个标记） |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
@@ -118,6 +119,8 @@ pnpm run build          # 产出 dist/index.cjs
 > **0.2.12 起**桌宠可以在没有打开的会话时让 DSH 新建一个（PR #7，致谢 @ink1453），并且升级路由带自愈：DSH 桌面端热重载导致 `/coopanion/pet` 被陈旧实例占用时，本实例会接管并每 5s 自检重认领。
 >
 > **0.2.20 起**修掉"桌宠把消息发错会话"：DSH 只在真有活动时才发事件，静默切标签页一条都不会来，所以 Host 猜的 owner 随时可能是陈的。现在桌宠可以在 `say` 里带上目标会话 id，Host 每次说话前重新核对实时列表——目标没了就拒收并回传列表，**不再**悄悄改投 owner；回执里也带"这句话进了哪个会话"，发错了看得见。
+>
+> **0.2.21 起**自动跟随只认人的动作：只有人在某个会话里`user/message`或给出`approval/decided`，归属才会跟过去。此前模型自己跑（`assistant/message`、工具调用、回合起止）也算"有活动"，于是桌宠刚固定好的会话会被模型在别处的输出抢走，pin 一并清掉——那正是"发错会话"在指名投递之外的残留路径。
 
 ### 发布到 npm 的要点
 
