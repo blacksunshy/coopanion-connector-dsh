@@ -490,6 +490,36 @@ describe('the conversations DSH lists but this process never resumed', () => {
     expect(opened.injected).toHaveLength(1);
   });
 
+  it('can be picked, not just read: choosing one opens it before it becomes the target', async () => {
+    // The pet's own menu offers these rows. A row it can read but cannot select is the same lie as
+    // a menu that hides half the conversations — so `pick` opens the conversation on demand too.
+    const opened = agentOf('session-cold');
+    const { connect } = await loaded({
+      sessionController: {
+        list: async () => ({
+          items: [
+            { sessionId: 'session-1', cwd: '/w/a', agentAvailable: true },
+            { sessionId: 'session-cold', cwd: '/w/a', agentAvailable: false },
+          ],
+        }),
+        agents: { resolveAgent: async (id: string) => (id === 'session-cold' ? { agent: opened } : undefined) },
+      },
+    });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'session-list'));
+    send({ t: 'pick', session: 'session-cold' });
+    await until(() => frames.some((frame) => frame.t === 'picked' || frame.t === 'refused'));
+    expect(frames.find((frame) => frame.t === 'picked' || frame.t === 'refused')).toMatchObject({
+      t: 'picked',
+      session: 'session-cold',
+    });
+    // And it really is the target now: a later unnamed line lands there, not in the old owner.
+    send({ t: 'say', id: 'p1', text: '就在这说', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'accepted'));
+    expect(opened.injected).toHaveLength(1);
+  });
+
   it('is refused, not silently rerouted, when the Host will not open the named one', async () => {
     const only = agentOf('session-1');
     const { emit, connect } = await loaded({

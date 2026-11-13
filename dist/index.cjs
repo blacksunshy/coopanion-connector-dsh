@@ -4026,10 +4026,24 @@ var PetHub = class {
         }
         case "pick": {
           const pick = this.opts.pick;
-          const reason2 = pick === void 0 ? "this Host does not support session switching" : pick(frame.session);
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify(reason2 === null ? { t: "picked", session: frame.session } : { t: "refused", reason: reason2 }));
+          if (pick === void 0) {
+            if (ws.readyState === ws.OPEN) {
+              ws.send(JSON.stringify({ t: "refused", reason: "this Host does not support session switching" }));
+            }
+            return;
           }
+          void Promise.resolve().then(() => pick(frame.session)).then(
+            (reason2) => {
+              if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify(reason2 === null ? { t: "picked", session: frame.session } : { t: "refused", reason: reason2 }));
+              }
+            },
+            (err) => {
+              if (ws.readyState === ws.OPEN) {
+                ws.send(JSON.stringify({ t: "refused", reason: `DSH failed to switch: ${err.message}` }));
+              }
+            }
+          );
           return;
         }
         case "unpin": {
@@ -5129,7 +5143,13 @@ var plugin_default = {
                 return { reason: `DSH refused the message: ${err.message}`, code: "host-error", session: delivered, sessions };
               }
             },
-            pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
+            pick: async (session) => {
+              const id = String(session);
+              if (agents.liveGet(id) === void 0 && !await attachSession(scoped, agents, id, logLine)) {
+                return "no such open conversation";
+              }
+              return agents.setOwner(id) ? null : "no such open conversation";
+            },
             listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession }),
             unpin: () => {
               agents.clearPin();

@@ -767,7 +767,16 @@ export default {
             return { reason: `DSH refused the message: ${(err as Error).message}`, code: 'host-error' as const, session: delivered, sessions };
           }
         },
-        pick: (session) => (agents.setOwner(String(session)) ? null : 'no such open conversation'),
+        pick: async (session) => {
+          const id = String(session);
+          // The pet may be picking a row it read off the list that this process has no Agent for
+          // yet. Open it first, exactly as `say` does — a menu the pet cannot select from is the
+          // same lie as a list that hides half the conversations.
+          if (agents.liveGet(id) === undefined && !(await attachSession(scoped, agents, id, logLine))) {
+            return 'no such open conversation';
+          }
+          return agents.setOwner(id) ? null : 'no such open conversation';
+        },
         listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession }),
         unpin: () => {
           agents.clearPin();

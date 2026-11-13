@@ -6,12 +6,13 @@
   - 枚举源改为 `sessionController.list()`——DSH 侧栏画那份列表用的就是它。它的注释写明「Read all visible Session rows **without resuming an Agent**」，所以列一遍不会把十六个会话全加载进内存。日志 `rescan-existing` 增加 `listed` 字段
   - `list()` 里 DSH 报 `agentAvailable: false` 的会话（磁盘上有、内存里没有 Agent）不再被静默丢掉，而是作为**冷行**进清单，`SessionSummary` 增加可选字段 `cold: true` 标明身份。它能被读到、能被指名，但不参与 owner 继承也不算「默认送到这里」——一个还没有嘴的行不该看起来像默认目标
   - 指名往冷行说话时按需 `resolveAgent` 把它**真的打开**（这也是 DSH 侧栏点开一个会话时走的路），而不是回一句「这个会话没开」。只对这一次点击付 resume 的代价，不为了填菜单把整台机器的会话都 resume
+  - `pick` 同样按需打开：桌宠从自己那份菜单里挑一行时，那一行可能正是冷行。一份能读却不能选的菜单，和一份藏掉一半会话的菜单是同一种谎
   - `send()` 放行未绑定状态下的 `session-list`：这份清单是**菜单不是通知**，一个还在等 `ready` 的桌宠正是最需要知道"有什么可以打开"的读者。以前它被丢掉，导致桌宠在一个明明有会话的 Host 上完全看不见任何东西，直到某个会话恰好被 resume
   - 订阅 `api-session/added` / `api-session/removed`，会话在启动之后变得可见、或消失时增量更新清单并 push `session-list`，不必只靠那一次启动扫描
   - 子代理照旧排除：`parentSessionId` 非空或 `origin === 'subagent'` 的行不进清单——它属于开它的那个会话，列出来就是让桌宠去指别人的活
 - 顺手清掉一处自欺：旧代码把 `controller.list` 当集合读（`Array.isArray` 恒假，所以永远"没找到"却也不报错）。现在它的角色是明确的异步枚举，从探测列表里删掉
 - 只**追加**字段，旧桌宠忽略 `cold` 照常工作；`PROTOCOL_VERSION` 仍是 1
-- 测试：`tsc --noEmit` 通过；`vitest` **116 passed**（新增 3 条：冷行带标题出现在清单里且子代理不出现、指名冷行会 attach 后投递成功、Host 拒绝打开时回 `cannot-deliver` 而**不回退**到 owner）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
+- 测试：`tsc --noEmit` 通过；`vitest` **117 passed**（新增 4 条：冷行带标题出现在清单里且子代理不出现、指名冷行会 attach 后投递成功、`pick` 冷行会 attach 并成为后续目标、Host 拒绝打开时回 `cannot-deliver` 而**不回退**到 owner）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
 
 ## 0.2.23 — 未发布
 

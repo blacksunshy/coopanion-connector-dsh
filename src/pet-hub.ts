@@ -39,8 +39,14 @@ export interface PetHubOptions {
    * never quietly fall back to another conversation, which is how lines end up in the wrong place.
    */
   say(text: string, from: string, target?: string): Promise<SayOutcome>;
-  /** The pet asked to switch the owning session; return null to accept, or the refusal reason. */
-  pick?(session: string): string | null;
+  /**
+   * The pet asked to switch the owning session; return null to accept, or the refusal reason.
+   *
+   * May answer a promise: switching to a conversation DSH lists but has not resumed requires
+   * attaching its Agent first, and a menu whose rows cannot all be selected is a worse lie than
+   * a short menu.
+   */
+  pick?(session: string): string | null | Promise<string | null>;
   /** The pet asked for every live session, to render an explicit picker. */
   listSessions?(): { sessions: SessionSummary[]; pinned: boolean; owner?: string | null };
   /** The pet asked to drop the pin so auto-follow takes over again; return null when accepted. */
@@ -233,10 +239,29 @@ export class PetHub {
           // `pick` resolves `null` on acceptance, so absence must be tested explicitly: `??`
           // would turn an accepted pick into the "unsupported" refusal.
           const pick = this.opts.pick;
-          const reason = pick === undefined ? 'this Host does not support session switching' : pick(frame.session);
-          if (ws.readyState === ws.OPEN) {
-            ws.send(JSON.stringify(reason === null ? { t: 'picked', session: frame.session } : { t: 'refused', reason }));
+          if (pick === undefined) {
+            if (ws.readyState === ws.OPEN) {
+              ws.send(JSON.stringify({ t: 'refused', reason: 'this Host does not support session switching' }));
+            }
+            return;
           }
+          // A pick may have to open the conversation first (DSH attaches an Agent on demand), so
+          // the answer can be a promise. Refusing a listed-but-not-yet-open conversation here is
+          // what made the pet's own menu offer rows it could not then select.
+          void Promise.resolve()
+            .then(() => pick(frame.session))
+            .then(
+              (reason) => {
+                if (ws.readyState === ws.OPEN) {
+                  ws.send(JSON.stringify(reason === null ? { t: 'picked', session: frame.session } : { t: 'refused', reason }));
+                }
+              },
+              (err: Error) => {
+                if (ws.readyState === ws.OPEN) {
+                  ws.send(JSON.stringify({ t: 'refused', reason: `DSH failed to switch: ${err.message}` }));
+                }
+              },
+            );
           return;
         }
         case 'unpin': {
