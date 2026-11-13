@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js
+// node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js"(exports2, module2) {
+  "node_modules/ws/lib/constants.js"(exports2, module2) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -57,10 +57,11 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js
+// node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
+  "node_modules/ws/lib/buffer-util.js"(exports2, module2) {
     "use strict";
+    var { websocketMask, websocketUnmask } = require("http");
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
     function concat(list, totalLength) {
@@ -115,7 +116,16 @@ var require_buffer_util = __commonJS({
       toBuffer,
       unmask: _unmask
     };
-    if (!process.env.WS_NO_BUFFER_UTIL) {
+    if (websocketMask) {
+      module2.exports.mask = function(source, mask, output, offset, length) {
+        if (length < 24) _mask(source, mask, output, offset, length);
+        else websocketMask(source, mask, output, offset, length);
+      };
+      module2.exports.unmask = function(buffer, mask) {
+        if (buffer.length < 24) _unmask(buffer, mask);
+        else websocketUnmask(buffer, mask);
+      };
+    } else if (!process.env.WS_NO_BUFFER_UTIL) {
       try {
         const bufferUtil = require("bufferutil");
         module2.exports.mask = function(source, mask, output, offset, length) {
@@ -132,9 +142,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js
+// node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js"(exports2, module2) {
+  "node_modules/ws/lib/limiter.js"(exports2, module2) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -182,9 +192,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js
+// node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
+  "node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
     "use strict";
     var zlib = require("zlib");
     var bufferUtil = require_buffer_util();
@@ -565,9 +575,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js
+// node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js"(exports2, module2) {
+  "node_modules/ws/lib/validation.js"(exports2, module2) {
     "use strict";
     var { isUtf8 } = require("buffer");
     var { hasBlob } = require_constants();
@@ -766,9 +776,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js
+// node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js"(exports2, module2) {
+  "node_modules/ws/lib/receiver.js"(exports2, module2) {
     "use strict";
     var { Writable } = require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -1178,6 +1188,7 @@ var require_receiver = __commonJS({
             unmask(data, this._mask);
           }
         }
+        this._mask = void 0;
         if (this._opcode > 7) {
           this.controlMessage(data, cb);
           return;
@@ -1389,9 +1400,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js
+// node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js"(exports2, module2) {
+  "node_modules/ws/lib/sender.js"(exports2, module2) {
     "use strict";
     var { Duplex } = require("stream");
     var { randomFillSync } = require("crypto");
@@ -1510,12 +1521,15 @@ var require_sender = __commonJS({
           target[2] = target[3] = 0;
           target.writeUIntBE(dataLength, 4, 6);
         }
-        if (!options.mask) return [target, data];
+        if (!options.mask) {
+          return dataLength ? [target, data] : [target];
+        }
         target[1] |= 128;
         target[offset - 4] = mask[0];
         target[offset - 3] = mask[1];
         target[offset - 2] = mask[2];
         target[offset - 1] = mask[3];
+        if (!dataLength) return [target];
         if (skipMasking) return [target, data];
         if (merge) {
           applyMask(data, mask, target, offset, dataLength);
@@ -1882,9 +1896,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js
+// node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js"(exports2, module2) {
+  "node_modules/ws/lib/event-target.js"(exports2, module2) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -2111,9 +2125,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js
+// node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js"(exports2, module2) {
+  "node_modules/ws/lib/extension.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -2264,14 +2278,15 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js
+// node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var https = require("https");
     var http = require("http");
     var net = require("net");
+    var querystring = require("querystring");
     var tls = require("tls");
     var { randomBytes, createHash } = require("crypto");
     var { Duplex, Readable } = require("stream");
@@ -2798,10 +2813,9 @@ var require_websocket = __commonJS({
           throw new SyntaxError(`Invalid URL: ${address}`);
         }
       }
-      if (parsedUrl.protocol === "http:") {
-        parsedUrl.protocol = "ws:";
-      } else if (parsedUrl.protocol === "https:") {
-        parsedUrl.protocol = "wss:";
+      if (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") {
+        parsedUrl = new URL(parsedUrl);
+        parsedUrl.protocol = parsedUrl.protocol === "http:" ? "ws:" : "wss:";
       }
       websocket._url = parsedUrl.href;
       const isSecure = parsedUrl.protocol === "wss:";
@@ -2870,12 +2884,19 @@ var require_websocket = __commonJS({
         }
       }
       if (parsedUrl.username || parsedUrl.password) {
-        opts.auth = `${parsedUrl.username}:${parsedUrl.password}`;
+        const username = querystring.unescape(parsedUrl.username);
+        const password = querystring.unescape(parsedUrl.password);
+        opts.auth = `${username}:${password}`;
       }
       if (isIpcUrl) {
-        const parts = opts.path.split(":");
-        opts.socketPath = parts[0];
-        opts.path = parts[1];
+        const i = opts.path.indexOf(":");
+        if (i === -1) {
+          opts.socketPath = opts.path;
+          opts.path = "";
+        } else {
+          opts.socketPath = opts.path.slice(0, i);
+          opts.path = opts.path.slice(i + 1);
+        }
       }
       let req;
       if (opts.followRedirects) {
@@ -3070,8 +3091,13 @@ var require_websocket = __commonJS({
     function receiverOnConclude(code, reason2) {
       const websocket = this[kWebSocket];
       websocket._closeFrameReceived = true;
-      websocket._closeMessage = reason2;
       websocket._closeCode = code;
+      if (reason2.length === 0) {
+        websocket._closeMessage = EMPTY_BUFFER;
+      } else {
+        websocket._closeMessage = Buffer.allocUnsafeSlow(reason2.length);
+        websocket._closeMessage.set(reason2);
+      }
       if (websocket._socket[kWebSocket] === void 0) return;
       websocket._socket.removeListener("data", socketOnData);
       process.nextTick(resume, websocket._socket);
@@ -3173,9 +3199,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js
+// node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js"(exports2, module2) {
+  "node_modules/ws/lib/stream.js"(exports2, module2) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = require("stream");
@@ -3271,9 +3297,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js
+// node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
+  "node_modules/ws/lib/subprotocol.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -3316,9 +3342,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js
+// node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var http = require("http");
@@ -3736,7 +3762,7 @@ module.exports = __toCommonJS(index_exports);
 var import_node_crypto = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
+// node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
 var import_extension = __toESM(require_extension(), 1);
 var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -3763,7 +3789,8 @@ function parsePetFrame(raw) {
     case "say": {
       if (typeof frame.id !== "string" || typeof frame.text !== "string") return null;
       const from = typeof frame.from === "string" && frame.from.trim() ? frame.from : "the pet";
-      return { t: "say", id: frame.id.slice(0, 64), text: frame.text, from: from.slice(0, 64) };
+      const session = typeof frame.session === "string" && frame.session.trim() ? frame.session.trim().slice(0, 128) : void 0;
+      return { t: "say", id: frame.id.slice(0, 64), text: frame.text, from: from.slice(0, 64), session };
     }
     case "ping":
       return { t: "ping" };
@@ -3879,9 +3906,15 @@ var PetHub = class {
   upgrade = (req, socket, head) => {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
   };
-  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session. */
+  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session.
+   *
+   *  `session-list` is let through while unbound: it is the menu, not a notification about a
+   *  conversation, and a pet that is still waiting for a `ready` is exactly the reader that needs
+   *  to know what could be opened. Dropping it there left a pet on a Host with open conversations
+   *  unable to see any of them until one happened to be resumed. */
   send(frame) {
-    if (!this.connected || !this.bound) return false;
+    if (!this.connected) return false;
+    if (!this.bound && frame.t !== "session-list") return false;
     this.connection.send(JSON.stringify(frame));
     return true;
   }
@@ -3889,7 +3922,14 @@ var PetHub = class {
   notifyBound(facts) {
     if (!this.connected) return;
     this.opts.log("info", `DSH bridge bound to session ${facts.session}`);
-    this.connection.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...facts }));
+    const list = this.opts.listSessions?.();
+    this.connection.send(JSON.stringify({
+      t: "ready",
+      v: PROTOCOL_VERSION,
+      ...facts,
+      sessions: facts.sessions ?? list?.sessions,
+      pinned: facts.pinned ?? list?.pinned
+    }));
     this.bound = true;
   }
   /** Tells the pet the owning conversation is gone (disposed / subagent filtered out).
@@ -3934,7 +3974,14 @@ var PetHub = class {
           if (welcome) {
             this.bound = true;
             this.opts.log("info", `Coopanion pet "${frame.name}" connected`);
-            ws.send(JSON.stringify({ t: "ready", v: PROTOCOL_VERSION, ...welcome }));
+            const list = this.opts.listSessions?.();
+            ws.send(JSON.stringify({
+              t: "ready",
+              v: PROTOCOL_VERSION,
+              ...welcome,
+              sessions: welcome.sessions ?? list?.sessions,
+              pinned: welcome.pinned ?? list?.pinned
+            }));
           } else {
             this.opts.log("info", `Coopanion pet "${frame.name}" connected, waiting for a conversation`);
           }
@@ -3942,17 +3989,17 @@ var PetHub = class {
         }
         case "say": {
           const text = frame.text.slice(0, SAY_MAX);
-          void this.opts.say(text, frame.from).then((refusal) => {
-            const ack = refusal === null ? { t: "accepted", id: frame.id } : { t: "refused", id: frame.id, reason: refusal };
-            if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(ack));
-          });
+          void this.opts.say(text, frame.from, frame.session).then(
+            (outcome) => this.ackSay(ws, frame.id, outcome),
+            (err) => this.ackSay(ws, frame.id, { reason: `DSH failed to accept the message: ${err.message}` })
+          );
           return;
         }
         case "list-sessions": {
           const list = this.opts.listSessions?.();
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(
-              list ? { t: "session-list", sessions: list.sessions, pinned: list.pinned } : { t: "error", text: "this Host does not support listing sessions" }
+              list ? { t: "session-list", sessions: list.sessions, pinned: list.pinned, owner: this.ownerOf(list) } : { t: "error", text: "this Host does not support listing sessions" }
             ));
           }
           return;
@@ -4007,6 +4054,33 @@ var PetHub = class {
     } catch {
     }
   }
+  /** The conversation a `say` without a target would land in, from a session list. */
+  ownerOf(list) {
+    if (list.owner !== void 0) return list.owner;
+    return list.sessions.find((session) => session.owner)?.id ?? null;
+  }
+  /**
+   * Answer one `say`.
+   *
+   * The ack repeats where the words went (`session`) and what the pet may switch to (`sessions`),
+   * so the pet never has to assume its line landed where it meant. A refusal additionally carries
+   * a `code` the pet can branch on and the same list, so recovering costs no extra round trip.
+   */
+  ackSay(ws, id, outcome) {
+    if (ws.readyState !== ws.OPEN) return;
+    const list = this.opts.listSessions?.();
+    const sessions = list?.sessions;
+    const pinned = list?.pinned;
+    let ack;
+    if (outcome === null) {
+      ack = { t: "accepted", id, session: this.ownerOf(list ?? { sessions: [] }) ?? void 0, sessions, pinned };
+    } else if (typeof outcome === "string") {
+      ack = { t: "refused", id, reason: outcome, sessions, pinned };
+    } else {
+      ack = { t: "refused", id, reason: outcome.reason, code: outcome.code, session: outcome.session, sessions: outcome.sessions ?? sessions, pinned: outcome.pinned ?? pinned };
+    }
+    ws.send(JSON.stringify(ack));
+  }
 };
 
 // src/session-watch.ts
@@ -4014,6 +4088,30 @@ var AgentRegistry = class {
   live = /* @__PURE__ */ new Map();
   /** model 按 session 缓存，因为模型是请求级属性而非 agent 常驻属性。 */
   modelCache = /* @__PURE__ */ new Map();
+  /**
+   * title 按 session 缓存。标题在日志里，折叠它要扫完整个会话的 events（长会话数千条），
+   * 而 `listSessions()` 会在每次 owner 变化与每次桌宠问清单时被调用，所以只在第一次折叠，
+   * 之后靠 `session/title` 事件增量更新（见 `rememberTitle`）。
+   */
+  titleCache = /* @__PURE__ */ new Map();
+  /**
+   * Whether a turn is open, for the Hosts where `agent.status` cannot be read.
+   *
+   * DSH is the authority when it answers (`agent.status`), so this map is only consulted as a
+   * fallback: it is maintained from the `turn/start` / `turn/end` events this plugin already sees,
+   * which is exactly the "is a turn running" question the pet asks. Kept per session and deleted on
+   * `remove`, so a disposed conversation cannot leave a stale "running" behind.
+   */
+  openTurn = /* @__PURE__ */ new Set();
+  /**
+   * Conversations DSH lists but this process holds no Agent for (see `ListedSession`).
+   *
+   * Kept beside the live map rather than in it, so nothing that asks "who is the owner" or "can we
+   * deliver to this id" can pick one by accident: a listed row is a name to show the pet, not a
+   * mouth to speak into. `add()` clears the entry, so a row that later gets an Agent keeps exactly
+   * one identity in `listSessions()`.
+   */
+  listed = /* @__PURE__ */ new Map();
   ownerId = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   pinned = false;
@@ -4058,12 +4156,14 @@ var AgentRegistry = class {
    */
   add(id, agent) {
     this.live.set(id, agent);
+    this.listed.delete(id);
     if (this.isSubagent(agent)) return;
     if (!this.pinned && !this.archived(id)) this.ownerId = id;
   }
   remove(id) {
     this.live.delete(id);
     this.modelCache.delete(id);
+    this.openTurn.delete(id);
     if (this.pinned && this.ownerId === id) this.pinned = false;
     if (this.ownerId === id) {
       this.ownerId = [...this.live.keys()].at(-1) ?? null;
@@ -4097,6 +4197,53 @@ var AgentRegistry = class {
     return this.live.get(id);
   }
   /**
+   * Replace the set of conversations DSH lists without this process holding an Agent for them.
+   *
+   * The whole set is replaced, never merged: a conversation that DSH stopped listing (archived,
+   * deleted, or never really there) must disappear from the pet's menu in the same call, or the pet
+   * keeps offering a name nobody can open. Rows that do have a live Agent are dropped here, so
+   * `listSessions()` can concatenate the two sources without duplicates.
+   */
+  noteListed(rows) {
+    this.listed.clear();
+    let kept = 0;
+    for (const row of rows) {
+      const id = String(row.id ?? "");
+      if (!id || this.live.has(id) || this.archived(id)) continue;
+      this.listed.set(id, {
+        cwd: String(row.cwd ?? ""),
+        title: String(row.title ?? ""),
+        running: row.running === true
+      });
+      kept++;
+    }
+    return kept;
+  }
+  /** How many listed-but-not-live conversations the registry is holding — for the bridge log. */
+  get listedSize() {
+    return this.listed.size;
+  }
+  /**
+   * Add or refresh one listed conversation, from a Host event that names it.
+   *
+   * DSH announces a conversation becoming visible (`api-session/added`) with its whole summary, so
+   * this keeps the pet's menu current without re-reading the entire list. A row that has a live
+   * Agent here, or is archived, is ignored — it is not a listed row by definition.
+   */
+  noteListedOne(id, row) {
+    if (!id || this.live.has(id) || this.archived(id)) return false;
+    this.listed.set(id, {
+      cwd: String(row.cwd ?? ""),
+      title: String(row.title ?? ""),
+      running: row.running === true
+    });
+    return true;
+  }
+  /** Forget a listed conversation DSH says is gone. Answers whether it was being held. */
+  forgetListed(id) {
+    return this.listed.delete(id);
+  }
+  /**
    * Lets the pet point its words at a specific live session, instead of always following the
    * newest one. Also pins the registry so auto-follow and new-session creation stop stealing the
    * owner away. Returns false when the session is not live (already disposed, never created, or
@@ -4112,15 +4259,15 @@ var AgentRegistry = class {
     return true;
   }
   /**
-   * Auto-follow: snaps the owner to `id` when the person clearly switched tabs and spoke there,
-   * or the model replied there. Silent navigation (no events from the target session) does not
-   * trigger a move — this only reacts to real activity. Returns true when moved, false when the
-   * session is not live, it is a subagent, or it is already the owner.
+   * Auto-follow: snaps the owner to `id` because **the person** acted there (`isPersonActionEvent`
+   * is the only caller's gate). The model working on a session never calls this. Returns true when
+   * moved, false when the session is not live, it is a subagent, or it is already the owner.
    *
-   * When it *does* move, it also clears the pin. A pin was either set explicitly (pet said "hold
-   * this one") or accumulated as a side effect of the pet syncing its own owner — the user's
-   * active behaviour on another session is a stronger signal, so the old pin falls away. The pin
-   * still protects against `agent/created` stealing, which is what it was built for.
+   * When it does move, it also clears the pin. A pin was set either explicitly (the pet named this
+   * conversation) or as a side effect of syncing the pet's own owner — the person speaking
+   * elsewhere right now is a stronger signal about where the person is looking, so the old pin
+   * falls away and the pet follows. The pin still protects against `agent/created` stealing and
+   * against the model's own output, which is what it is for.
    */
   forceOwner(id) {
     if (id === this.ownerId) return false;
@@ -4139,6 +4286,56 @@ var AgentRegistry = class {
   /** 记录某会话最近一次 request/header 里看到的模型名。 */
   rememberModel(id, model) {
     if (model) this.modelCache.set(id, model);
+  }
+  /**
+   * 记录某会话的标题。DSH 追加 `session/title` 时调用；长度为零视为"还没起名"，
+   * 于是丢掉缓存，下次 `listSessions()` 重新折叠日志——会话刚建好时正是这个状态。
+   */
+  rememberTitle(id, title) {
+    if (title) this.titleCache.set(id, title);
+    else this.titleCache.delete(id);
+  }
+  /**
+   * 会话的标题，没起名时给空串。
+   *
+   * 标题不在 header 里，而在日志的事件里：DSH 只在第一条用户消息之后追加一条
+   * `session/title`，所以这里折叠日志取最后一条（等价于 DSH 自己的 `foldSessionTitle`）。
+   * 折叠结果按 session 缓存，之后由 `rememberTitle` 增量更新。
+   */
+  titleOf(sessionId) {
+    const cached = this.titleCache.get(sessionId);
+    if (cached !== void 0) return cached;
+    const events = this.live.get(sessionId)?.session.snapshotEvents?.() ?? [];
+    let title = "";
+    for (const event of events) {
+      if (event?.type !== "session/title") continue;
+      const data = event.data;
+      if (typeof data?.title === "string") title = data.title;
+    }
+    this.titleCache.set(sessionId, title);
+    return title;
+  }
+  /**
+   * Tracks `turn/start` / `turn/end` for the fallback answer to "is this conversation working".
+   *
+   * Only used when `agent.status` is unavailable, but it is recorded unconditionally: the fallback
+   * has to be correct the first time it is asked, and by then the turn may already be running.
+   */
+  noteTurnEvent(id, event) {
+    if (event?.type === "turn/start") this.openTurn.add(id);
+    else if (event?.type === "turn/end") this.openTurn.delete(id);
+  }
+  /**
+   * Whether this conversation is working right now.
+   *
+   * DSH's `agent.status` wins when it is readable; otherwise the turn listener's own view stands in.
+   * Deliberately never throws: an unreadable status must cost a field, not the whole session list.
+   */
+  runningOf(id, agent) {
+    const status = agent.status;
+    if (status === "running") return true;
+    if (status === "idle") return false;
+    return this.openTurn.has(id);
   }
   /** What the pet is told on connect; null when no conversation is open yet. */
   facts() {
@@ -4169,9 +4366,27 @@ var AgentRegistry = class {
         id,
         cwd: String(agent.session.header?.cwd ?? ""),
         model: this.modelOf(id),
+        // 没有标题的老会话给空串：桌宠据此知道"这条还没起名"，而不是"不认识它"。
+        title: this.titleOf(id),
+        // 有没有在跑轮次：桌宠据此知道"它是正在忙"还是"它没理我"，也据此决定要不要再等。
+        running: this.runningOf(id, agent),
         owner: id === this.ownerId && !sub,
         pinned: this.pinned && id === this.ownerId,
         subagent: sub
+      });
+    }
+    for (const [id, row] of this.listed) {
+      if (this.live.has(id) || this.archived(id)) continue;
+      out.push({
+        id,
+        cwd: row.cwd,
+        model: this.modelOf(id),
+        title: row.title,
+        running: row.running,
+        owner: false,
+        pinned: false,
+        subagent: false,
+        cold: true
       });
     }
     return out;
@@ -4188,17 +4403,16 @@ var AgentRegistry = class {
     return this.modelCache.get(sessionId) ?? "";
   }
 };
-var ACTIVE_EVENT_TYPES = /* @__PURE__ */ new Set([
+var PERSON_ACTION_EVENT_TYPES = /* @__PURE__ */ new Set([
   "user/message",
-  "assistant/message",
-  "turn/start",
-  "turn/end",
-  "tool/call",
-  "approval/asked"
+  // DSH appends this pair around a permission request: `approval/asked` when it asks, and
+  // `approval/decided` when the answer is written. Only a person answers, so it is a person's mark
+  // on the conversation even though the dsh app records it.
+  "approval/decided"
 ]);
-function isActiveSessionEvent(event) {
+function isPersonActionEvent(event) {
   const t = event?.type;
-  return typeof t === "string" && ACTIVE_EVENT_TYPES.has(t);
+  return typeof t === "string" && PERSON_ACTION_EVENT_TYPES.has(t);
 }
 function noticeOf(sessionId, event) {
   const data = event.data ?? {};
@@ -4355,7 +4569,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.19") return "0.2.19";
+  if ("0.2.24") return "0.2.24";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4599,11 +4813,31 @@ function buildUserMessage(text, template, factoryOverride = factory ?? null) {
   }
   return { id: (0, import_node_crypto.randomUUID)(), role: "user", content: [{ type: "text", text }], source: { kind: "user" } };
 }
+async function listSessionsFromHost(controller) {
+  const list = controller?.list;
+  if (typeof list !== "function") return [];
+  try {
+    const answer = await list.call(controller, {});
+    const items = answer?.items;
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+function titleOfRow(row) {
+  const title = row.projections?.values?.title;
+  return typeof title === "string" ? title : "";
+}
 async function rescanExistingSessions(scoped, agents, log) {
   try {
     const controller = scoped.get("sessionController");
     const registry = scoped.get("workspaceRegistry");
     const ids = /* @__PURE__ */ new Set();
+    const rows = await listSessionsFromHost(controller);
+    for (const row of rows) {
+      const id = String(row.sessionId ?? "");
+      if (id) ids.add(id);
+    }
     try {
       for (const workspace of registry?.list?.() ?? []) {
         for (const id of workspace.sessionIds ?? []) if (id) ids.add(id);
@@ -4646,7 +4880,7 @@ async function rescanExistingSessions(scoped, agents, log) {
       }
       register(id, agent);
     }
-    for (const coll of ["agents", "sessions", "list", "listSessions"]) {
+    for (const coll of ["agents", "sessions", "live"]) {
       const c = controller?.[coll];
       const items = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
       for (const item of items) {
@@ -4654,6 +4888,12 @@ async function rescanExistingSessions(scoped, agents, log) {
         if (sid) register(sid, item);
       }
     }
+    const available = /* @__PURE__ */ new Set();
+    for (const row of rows) {
+      const id = String(row.sessionId ?? "");
+      if (id && row.agentAvailable !== false) available.add(id);
+    }
+    const listUnavailable = rows.length === 0;
     let fromAsync = 0;
     let holder;
     try {
@@ -4663,7 +4903,7 @@ async function rescanExistingSessions(scoped, agents, log) {
     }
     if (holder && !(holder instanceof Map) && !Array.isArray(holder)) {
       for (const id of ids) {
-        if (registered.has(id)) continue;
+        if (registered.has(id) || !listUnavailable && !available.has(id)) continue;
         for (const name of ["resolveAgent", "get", "getAgent"]) {
           const fn = holder[name];
           if (typeof fn !== "function") continue;
@@ -4679,9 +4919,45 @@ async function rescanExistingSessions(scoped, agents, log) {
         }
       }
     }
-    log("rescan-existing", { sessionIds: ids.size, registered: registered.size, fromAsync });
+    const cold = rows.filter((row) => {
+      const id = String(row.sessionId ?? "");
+      if (!id || registered.has(id)) return false;
+      if (String(row.parentSessionId ?? "") !== "") return false;
+      return row.origin !== "subagent";
+    }).map((row) => ({
+      id: String(row.sessionId),
+      cwd: typeof row.cwd === "string" ? row.cwd : "",
+      title: titleOfRow(row),
+      running: row.running === true
+    }));
+    const listed = agents.noteListed(cold);
+    log("rescan-existing", { sessionIds: ids.size, registered: registered.size, fromAsync, listed });
   } catch (err) {
     log("rescan-existing-failed", { error: err.message });
+  }
+}
+async function attachSession(scoped, agents, sessionId, log) {
+  const controller = scoped.get("sessionController");
+  const holder = controller?.agents;
+  const resolve2 = holder?.resolveAgent;
+  if (typeof resolve2 !== "function") {
+    log("attach-session-unsupported", { sessionId });
+    return null;
+  }
+  try {
+    const found = await resolve2.call(holder, sessionId);
+    const candidate = found?.agent ?? found;
+    const a = candidate;
+    if (!a || typeof a.followup !== "function" || String(a.session?.id ?? "") !== sessionId) {
+      log("attach-session-refused", { sessionId, shape: found === void 0 ? "undefined" : typeof found });
+      return null;
+    }
+    agents.add(sessionId, a);
+    log("attach-session", { sessionId });
+    return a;
+  } catch (err) {
+    log("attach-session-failed", { sessionId, error: err.message });
+    return null;
   }
 }
 var plugin_default = {
@@ -4718,6 +4994,10 @@ var plugin_default = {
     const notify = (frame) => {
       hub?.send(frame);
     };
+    const pushSessions = () => {
+      if (!hub?.connected) return;
+      hub.send({ t: "session-list", sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession });
+    };
     const workspaceRows = () => {
       const registry = root.get("workspaceRegistry");
       const workspaces = registry?.list?.() ?? [];
@@ -4747,6 +5027,7 @@ var plugin_default = {
             rescanning = rescanExistingSessions(scoped, agents, logLine).then(() => {
               const facts = agents.facts();
               if (facts && hub?.connected) hub.notifyBound(facts);
+              pushSessions();
             }).finally(() => {
               rescanning = null;
             });
@@ -4766,36 +5047,90 @@ var plugin_default = {
               }
               knownCwd = facts.cwd || knownCwd;
               debug("welcome-ok", facts);
-              return facts;
+              return { ...facts, sessions: agents.listSessions(), pinned: agents.isPinned };
             },
-            say: async (text, from) => {
+            say: async (text, from, target) => {
               const body = text.trim();
-              if (!body) return "empty message";
-              if (carriesBridgePrefix(body)) return "this line already carries the bridge's prefix, so a second one would be nested around it";
-              if (!agents.forwarding) return "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel";
+              if (!body) return { reason: "empty message", code: "empty" };
+              if (carriesBridgePrefix(body)) {
+                return { reason: "this line already carries the bridge's prefix, so a second one would be nested around it", code: "nested-prefix" };
+              }
+              if (!agents.forwarding) {
+                return { reason: "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel", code: "forwarding-off" };
+              }
+              const sessions = agents.listSessions();
+              const known = new Set(sessions.filter((session) => !session.subagent).map((session) => session.id));
+              const ownerSession = agents.ownerSession;
+              if (target !== void 0) {
+                if (!known.has(target)) {
+                  debug("say-refused-stale-target", { target, ownerSession, liveCount: known.size });
+                  return {
+                    reason: `conversation ${target} is no longer open (it was archived, disposed, or was a subagent); pick one of the open conversations before speaking`,
+                    code: "stale-session",
+                    session: ownerSession,
+                    sessions,
+                    pinned: agents.isPinned
+                  };
+                }
+                if (agents.liveGet(target) === void 0) {
+                  const attached = await attachSession(scoped, agents, target, logLine);
+                  if (!attached) {
+                    debug("say-attach-failed", { target, ownerSession });
+                    return {
+                      reason: `conversation ${target} is listed by DSH but could not be opened to speak into; pick another one`,
+                      code: "cannot-deliver",
+                      session: ownerSession,
+                      sessions,
+                      pinned: agents.isPinned
+                    };
+                  }
+                }
+                const nowOwner = agents.ownerSession;
+                if (target !== nowOwner && !agents.forceOwner(target)) {
+                  return {
+                    reason: `conversation ${target} could not be made the owner; pick it again`,
+                    code: "stale-session",
+                    session: nowOwner,
+                    sessions,
+                    pinned: agents.isPinned
+                  };
+                }
+                if (target !== ownerSession) {
+                  const facts = agents.facts();
+                  if (facts && hub?.connected) hub.notifyBound(facts);
+                }
+              }
               const agent = agents.owner;
               if (!agent) {
                 debug("say-refused-no-owner", {
                   liveCount: agents.liveSize,
-                  ownerSession: agents.ownerSession,
+                  ownerSession,
                   isPinned: agents.isPinned,
                   forwarding: agents.forwarding
                 });
-                return "no conversation is open on the DSH side; a new one can be started with dsh_new_session";
+                return {
+                  reason: "no conversation is open on the DSH side; create one before speaking",
+                  code: "no-session",
+                  session: null,
+                  sessions,
+                  pinned: agents.isPinned
+                };
               }
-              if (typeof agent.followup !== "function") return "this DSH build cannot accept a message here";
+              if (typeof agent.followup !== "function") {
+                return { reason: "this DSH build cannot accept a message here", code: "cannot-deliver", session: ownerSession, sessions };
+              }
+              const delivered = agents.ownerSession;
               try {
                 await resolveFactory();
                 agent.followup(buildUserMessage(`${from}\uFF08\u901A\u8FC7\u684C\u5BA0\uFF09\u8BF4\uFF1A${body}`, userTemplate));
-                hub?.send({ t: "notice", kind: "forwarded", text: `\u5DF2\u9012\u9001\u5230 DSH\uFF08\u4F1A\u8BDD ${agents.ownerSession ?? "?"}\uFF09\uFF1A${body.slice(0, 80)}${body.length > 80 ? "\u2026" : ""}` });
                 return null;
               } catch (err) {
-                hub?.send({ t: "notice", kind: "forward-failed", text: `\u9012\u9001\u5931\u8D25\uFF1A${err.message}` });
-                return `DSH refused the message: ${err.message}`;
+                debug("say-failed", { session: delivered, error: err.message });
+                return { reason: `DSH refused the message: ${err.message}`, code: "host-error", session: delivered, sessions };
               }
             },
             pick: (session) => agents.setOwner(String(session)) ? null : "no such open conversation",
-            listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+            listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession }),
             unpin: () => {
               agents.clearPin();
               return null;
@@ -5098,6 +5433,23 @@ var plugin_default = {
     root.effect(() => () => {
       pending.length = 0;
     });
+    root.on("api-session/added", ((summary) => {
+      const id = String(summary?.sessionId ?? "");
+      if (!id) return;
+      if (String(summary.parentSessionId ?? "") !== "" || summary.origin === "subagent") return;
+      if (summary.agentAvailable === true) return;
+      const title = summary.projections?.values?.title;
+      if (agents.noteListedOne(id, {
+        cwd: typeof summary.cwd === "string" ? summary.cwd : "",
+        title: typeof title === "string" ? title : "",
+        running: summary.running === true
+      })) {
+        pushSessions();
+      }
+    }));
+    root.on("api-session/removed", ((sessionId) => {
+      if (agents.forgetListed(String(sessionId ?? ""))) pushSessions();
+    }));
     root.on("agent/created", ((payload) => {
       const agent = payload?.agent;
       const id = agent?.session?.id;
@@ -5120,6 +5472,7 @@ var plugin_default = {
       agents.add(String(id), agent);
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);
+      pushSessions();
     }));
     root.on("session/disposed", ((session) => {
       const id = session?.id;
@@ -5131,6 +5484,7 @@ var plugin_default = {
         if (facts) hub.notifyBound(facts);
         else hub.notifyUnbound();
       }
+      pushSessions();
     }));
     root.on("session/event", ((session, event) => {
       const id = String(session?.id ?? "");
@@ -5141,13 +5495,24 @@ var plugin_default = {
         if (typeof model === "string" && model) agents.rememberModel(id, model);
         return;
       }
+      if (event?.type === "session/title") {
+        const title = typeof data.title === "string" ? data.title : "";
+        agents.rememberTitle(id, title);
+        pushSessions();
+        return;
+      }
+      if (event?.type === "turn/start" || event?.type === "turn/end") {
+        agents.noteTurnEvent(id, event);
+        pushSessions();
+      }
       debug("session-event", { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
-      if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
+      if (agents.ownerSession !== id && isPersonActionEvent(event)) {
         const agent = agents.liveGet(id);
         debug("auto-follow-check", { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {
+          const wasPinned = agents.isPinned;
           if (agents.forceOwner(id)) {
-            debug("auto-follow-moved", { newOwner: id });
+            debug("auto-follow-moved", { newOwner: id, wasPinned });
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);
           }

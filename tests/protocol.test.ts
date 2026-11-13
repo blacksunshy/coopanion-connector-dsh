@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '../src/pet-hub.ts';
 import { SAY_MAX, argumentNames, assistantText, carriesBridgePrefix, parsePetFrame, questionTextOf, reasonText } from '../src/protocol.ts';
-import { AgentRegistry, isActiveSessionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
+import { AgentRegistry, isPersonActionEvent, noticeOf, type LiveAgent } from '../src/session-watch.ts';
 
 describe('a frame from the pet', () => {
   it('is read when it is one this Host knows', () => {
@@ -264,22 +264,139 @@ describe('which conversation the pet speaks into', () => {
     });
   });
 
-  describe('active-event detection', () => {
-    it('picks the six event types that mean real work happened on this session', () => {
-      expect(isActiveSessionEvent({ type: 'user/message' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'assistant/message' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'turn/start' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'turn/end' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'tool/call' })).toBe(true);
-      expect(isActiveSessionEvent({ type: 'approval/asked' })).toBe(true);
+  describe('person-action detection', () => {
+    it('picks the events a person makes on a session', () => {
+      expect(isPersonActionEvent({ type: 'user/message' })).toBe(true);
+      expect(isPersonActionEvent({ type: 'approval/decided' })).toBe(true);
+    });
+
+    it('ignores the model working, so a reply elsewhere cannot steal the owner', () => {
+      // Every one of these is the model acting, and a model acts wherever a line was handed to it.
+      // Following them is how a pinned conversation lost its pin to whatever answered last.
+      expect(isPersonActionEvent({ type: 'assistant/message' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'turn/start' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'turn/end' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'tool/call' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'approval/asked' })).toBe(false);
     });
 
     it('ignores request/header, unknown types, and missing type', () => {
-      expect(isActiveSessionEvent({ type: 'request/header', data: { header: { config: { model: 'x' } } } })).toBe(false);
-      expect(isActiveSessionEvent({ type: 'step/start' })).toBe(false);
-      expect(isActiveSessionEvent({ type: 'banana' })).toBe(false);
-      expect(isActiveSessionEvent({})).toBe(false);
+      expect(isPersonActionEvent({ type: 'request/header', data: { header: { config: { model: 'x' } } } })).toBe(false);
+      expect(isPersonActionEvent({ type: 'step/start' })).toBe(false);
+      expect(isPersonActionEvent({ type: 'banana' })).toBe(false);
+      expect(isPersonActionEvent({})).toBe(false);
     });
+  });
+});
+
+describe('the conversations the pet reads off the list', () => {
+  /** A live agent whose log already holds the given events. */
+  const titledAgent = (id: string, events: Array<{ type: string; data?: unknown }>): LiveAgent => ({
+    session: { id, header: { cwd: `/w/${id}` }, snapshotEvents: () => events },
+  });
+
+  it('carries the title the person knows the conversation by', () => {
+    // DSH never puts a title in the header; it appends a session/title event once the first
+    // message names the conversation. A pet that only sees an id and a directory guesses.
+    const agents = new AgentRegistry();
+    agents.add('a', titledAgent('a', [
+      { type: 'session/created' },
+      { type: 'session/title', data: { title: '修复桌宠会话错发问题' } },
+    ]));
+    expect(agents.listSessions()).toEqual([
+      { id: 'a', cwd: '/w/a', model: '', title: '修复桌宠会话错发问题', running: false, owner: true, pinned: false, subagent: false },
+    ]);
+  });
+
+  it('is empty while nobody has named the conversation yet', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', titledAgent('a', [{ type: 'session/created' }]));
+    expect(agents.listSessions()[0].title).toBe('');
+  });
+
+  it('keeps the last title when the conversation was renamed', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', titledAgent('a', [
+      { type: 'session/title', data: { title: '先说的事' } },
+      { type: 'user/message', data: { text: '换个说法' } },
+      { type: 'session/title', data: { title: '换个说法' } },
+    ]));
+    expect(agents.listSessions()[0].title).toBe('换个说法');
+  });
+
+  it('takes a fresh title without folding the log again', () => {
+    const agents = new AgentRegistry();
+    let folded = 0;
+    agents.add('a', {
+      session: {
+        id: 'a',
+        header: { cwd: '/w/a' },
+        snapshotEvents: () => {
+          folded += 1;
+          return [{ type: 'session/title', data: { title: '旧的' } }];
+        },
+      },
+    });
+    expect(agents.listSessions()[0].title).toBe('旧的');
+    // A rename arrives as an event, so the cached fold is replaced rather than recomputed:
+    // listSessions() runs on every owner change and every session question.
+    agents.rememberTitle('a', '新的');
+    expect(agents.listSessions()[0].title).toBe('新的');
+    expect(folded).toBe(1);
+  });
+
+  it('survives an agent that cannot show its log', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', { session: { id: 'a', header: { cwd: '/w/a' } } });
+    expect(agents.listSessions()[0]).toMatchObject({ id: 'a', title: '' });
+  });
+});
+
+describe('whether a conversation is working right now', () => {
+  const agentWith = (id: string, extra: Partial<LiveAgent> = {}): LiveAgent => ({
+    session: { id, header: { cwd: `/w/${id}` } },
+    ...extra,
+  });
+
+  it('reads DSH\'s own status when the Host exposes it', () => {
+    // `agent.status` is a live property (`'idle' | 'running'`), so it is the authoritative answer
+    // and needs no event subscription: reading it at list time is always current.
+    const agents = new AgentRegistry();
+    agents.add('busy', agentWith('busy', { status: 'running' }));
+    agents.add('quiet', agentWith('quiet', { status: 'idle' }));
+    const rows = agents.listSessions();
+    expect(rows.find((row) => row.id === 'busy')?.running).toBe(true);
+    expect(rows.find((row) => row.id === 'quiet')?.running).toBe(false);
+  });
+
+  it('falls back to the turn it saw start and has not seen end', () => {
+    // A Host that does not expose `status` must still answer, otherwise every conversation reads
+    // as idle and the pet cannot tell "still thinking" from "ignored me".
+    const agents = new AgentRegistry();
+    agents.add('a', agentWith('a'));
+    expect(agents.listSessions()[0].running).toBe(false);
+    agents.noteTurnEvent('a', { type: 'turn/start', data: { turn: 1 } });
+    expect(agents.listSessions()[0].running).toBe(true);
+    agents.noteTurnEvent('a', { type: 'turn/end', data: { turn: 1, reason: 'completed' } });
+    expect(agents.listSessions()[0].running).toBe(false);
+  });
+
+  it('prefers the status over the fallback when the two disagree', () => {
+    // The Host is the authority: a reloaded or resumed conversation can have a turn open in the
+    // log while its agent is idle, and telling the pet "still running" then is a lie it acts on.
+    const agents = new AgentRegistry();
+    agents.add('a', agentWith('a', { status: 'idle' }));
+    agents.noteTurnEvent('a', { type: 'turn/start', data: { turn: 1 } });
+    expect(agents.listSessions()[0].running).toBe(false);
+  });
+
+  it('forgets the open turn when the conversation is disposed', () => {
+    const agents = new AgentRegistry();
+    agents.add('a', agentWith('a'));
+    agents.noteTurnEvent('a', { type: 'turn/start', data: { turn: 1 } });
+    agents.remove('a');
+    agents.add('a', agentWith('a'));
+    expect(agents.listSessions()[0].running).toBe(false);
   });
 });
 

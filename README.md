@@ -14,9 +14,23 @@ DeepSeek Harness（DSH）bundle 插件：Coopanion 桌宠桥接的 Host 半区�
 - 没有桌宠在线时通知直接丢弃、不排队：DSH 的活不等桌宠，重放的回合只会在你已经在控制台读完之后才冒泡。`say` 有回执，桌宠能如实报告"没转交"而不是猜。
 - 文本里已带本 Host 前缀（`…（通过桌宠）说：`）的 `say` 会被拒收：再提交一次就会套两层前缀。
 - `tool` 通知只带工具名和参数名、不带值：到达桌宠的东西会进模型的上下文和事件流，秘密收不回来。
-- 接收 `say` 的对话是"最新的、非子代理的活跃 agent"——回答气泡的子代理是你没打开过的说话人。
-- 没有打开的会话时（例如把所有会话都归档了），`say` 会被拒回，`new` 让桌宠在 DSH 侧开一个新会话：走 `sessionController.commands.create`，落在当前会话所属的 Workspace，建好即成为 owner，桌宠随后收到 `ready`。
+- 接收没有指明会话的 `say` 的是"最新的、非子代理的活跃 agent"——回答气泡的子代理是你没打开过的说话人。
 - 已归档的会话不算"打开的会话"：归档只挡住模型调用，agent 还在，所以 owner 只在未归档的活跃会话里挑；桌宠不会把一个已归档会话当成说话对象。
+
+### 发错会话是怎么发生的，以及现在的约束
+
+DSH **没有"当前聚焦会话"这个信号**：只是切标签页、不说话，一条 `session/event` 都不会发出（这也是桌宠侧 0.6.11 的老注释）。于是"接收 `say` 的会话"只能是 Host 这一侧根据它收到过的事件**猜**出来的 newest-owner，一个可能几小时没变过的推测。桌宠如果照着本地记住的目标发，迟早会把一句话丢进 DSH 最后碰过的那个会话——这就是发错会话。
+
+所以现在的做法是把目标**显式化**，并且在**说话那一刻**校验，而不是在"瞄准那一刻"校验：
+
+- 桌宠的 `say` 可以带 `session`（目标会话 id）。带了就照办：Host 每次 `say` 都重新读一遍实时列表，目标不在列表里（已归档、已销毁、是子代理）就**拒收**并附上当前列表，**绝不**悄悄回退到 owner。
+- 不带 `session` 的老桌宠不受影响，仍然落在 owner 上。
+- `accepted` 回执里带 `session`（这句话到底进了哪个会话）和 `sessions`（当时所有打开的会话），桌宠可以把"落点"显示给人看，发错了人自己会发现。
+- `refused` 回执里带 `code`（`stale-session` / `no-session` / `forwarding-off` / `cannot-deliver` / `host-error` / `empty` / `nested-prefix`）和同一份 `sessions`，桌宠据此决定下一步：`stale-session` → 从列表里重选；`no-session` → `new`。
+- `ready` 和每次会话开关时 push 的 `session-list` 都带完整列表，所以桌宠**一开始就知道**有哪些会话可选，不必先问一次。
+- 「要不要新建会话」的判断因此有明确依据：**列表里没有任何一个可以指向的会话时，就该 `new`**，而不是发一个指望 fallback 的 `say`。
+
+完整的判断流程写在 `src/protocol.ts` 的 `SayOutcome` 上方注释里，那是两边都要照着实现的契约。
 
 ## 安装
 
@@ -93,6 +107,11 @@ pnpm run build          # 产出 dist/index.cjs
 | 没有会话时新建（`new` 帧、桌宠侧 `dsh_new_session` 与面板「新建会话」）；已归档会话不再作为 owner | **≥ 0.2.12** | **≥ 0.6.12** |
 | 新建会话可指定工作区（`new.workspace` / `list-workspaces`，`created.workspace` 回执） | **≥ 0.2.14** | **≥ 0.6.14**（旧 Host 静默忽略 `workspace` 时桌宠报「无法确认」而非假装成功） |
 | `turn-end` 上报上下文用量（`used` / `size`），桌宠侧用量到 90% 自动新建会话并交接 | **≥ 0.2.18** | **≥ 0.6.19**（Host 不报用量时回退 400 轮兜底，每会话最多交接一次） |
+| **发错会话修复**：`say` 可带目标 `session`；每次 `say` 重新校验实时列表并对失效目标拒收（不回退到 owner）；`accepted` / `refused` 带 `session` + `sessions` + `code`；`ready` 与会话开关时 push 完整列表；`list-sessions` 顶层带 `owner` | **≥ 0.2.20** | **≥ 0.6.22**（旧桌宠不带 `session` 时 Host 保持旧的 owner 行为，所以**只升 Host 不会坏**；但要真正修掉发错会话，桌宠也必须升） |
+| **自动跟随只认人的动作**：`assistant/message`、`turn/start`、`turn/end`、`tool/call` 不再抢走归属，只有 `user/message` 与 `approval/decided` 会 | **≥ 0.2.21** | **≥ 0.6.23**（桌宠侧同时把「你就指着这里」与「默认送到这里」拆成两个标记） |
+| **会话清单带标题**：`SessionSummary.title` 可选项，`listSessions()` 折 `session/title` 事件并缓存；`session/title` 到达时 push `session-list` | **≥ 0.2.22** | **≥ 0.6.24**（旧桌宠忽略该字段照常工作；没有它桌宠只能凭 id 与目录猜） |
+| **会话清单带运行状态**：`SessionSummary.running` 可选项，取 `agent.status`，读不到时退回本插件跟的 `turn/start`／`turn/end`；轮次起止时 push `session-list` | **≥ 0.2.23** | **≥ 0.6.25**（旧桌宠忽略该字段；没有它桌宠分不出「还在跑」与「没回答」） |
+| **看到全部会话**：会话清单改为读 `sessionController.list()`（DSH 侧栏用的同一份枚举，含标题与运行态），不再只靠 `agent/created` 攒到的几个；DSH 报存在但本进程没 Agent 的会话以 `SessionSummary.cold: true` 出现，指名往里说话时按需 `resolveAgent` 激活；未绑定的桌宠也能收到 `session-list`；订阅 `api-session/added`／`removed` 增量更新 | **≥ 0.2.24** | **≥ 0.6.26**（旧桌宠忽略 `cold` 字段照常工作；但没有这一项时桌宠只能看见恰好被 resume 过的那两三个会话，选错目标的根因仍在） |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 
@@ -101,6 +120,12 @@ pnpm run build          # 产出 dist/index.cjs
 > **0.2.11 起**还提供了会话列表与"解除固定"：DSH 只切 tab 不说话时不发任何事件，插件猜不到你在看哪个会话，所以由桌宠主动拉列表、显式选择；「解除固定」也会真正清掉 Host 侧 pin（0.2.10 及更早只改桌宠本地状态）。
 >
 > **0.2.12 起**桌宠可以在没有打开的会话时让 DSH 新建一个（PR #7，致谢 @ink1453），并且升级路由带自愈：DSH 桌面端热重载导致 `/coopanion/pet` 被陈旧实例占用时，本实例会接管并每 5s 自检重认领。
+>
+> **0.2.20 起**修掉"桌宠把消息发错会话"：DSH 只在真有活动时才发事件，静默切标签页一条都不会来，所以 Host 猜的 owner 随时可能是陈的。现在桌宠可以在 `say` 里带上目标会话 id，Host 每次说话前重新核对实时列表——目标没了就拒收并回传列表，**不再**悄悄改投 owner；回执里也带"这句话进了哪个会话"，发错了看得见。
+>
+> **0.2.21 起**自动跟随只认人的动作：只有人在某个会话里`user/message`或给出`approval/decided`，归属才会跟过去。此前模型自己跑（`assistant/message`、工具调用、回合起止）也算"有活动"，于是桌宠刚固定好的会话会被模型在别处的输出抢走，pin 一并清掉——那正是"发错会话"在指名投递之外的残留路径。
+>
+> **0.2.22 起**清单里带会话标题：`SessionSummary` 多了可选 `title`，取自会话日志里最后一条 `session/title`（标题不在 `SessionHeader` 里）。有了标题，桌宠才分得清「修桌宠发错会话的」和「整理鱼语料的那份」——只给 id 和目录时它只能猜，猜就是发错的起点。还没起名的会话给空串，桌宠显示「（还没起名）」。只追加字段，`PROTOCOL_VERSION` 仍是 1。
 
 ### 发布到 npm 的要点
 

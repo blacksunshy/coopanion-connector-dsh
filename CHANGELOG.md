@@ -1,5 +1,64 @@
 # 更新说明
 
+## 0.2.24 — 未发布
+
+- **修：桌宠只看得见两三个会话，而 DSH 侧栏里有十几个**（主人 11-13 问「为什么只能读两个会话」）。根因不是 DSH 只开了两个，而是本插件攒会话清单的方式只有一条路：等 `agent/created` 事件。DSH 只在会话真的被打开、被 resume 时才发这条事件，所以启动时已经存在的会话、以及之后一直没被碰过的会话，本进程里根本没有对应的 Agent——`listSessions()` 也就报不出来。实测现场：侧栏 16 个会话，桥只报 2 个；`rescan-existing` 从启动起一直记 `sessionIds: 0`。
+  - 枚举源改为 `sessionController.list()`——DSH 侧栏画那份列表用的就是它。它的注释写明「Read all visible Session rows **without resuming an Agent**」，所以列一遍不会把十六个会话全加载进内存。日志 `rescan-existing` 增加 `listed` 字段
+  - `list()` 里 DSH 报 `agentAvailable: false` 的会话（磁盘上有、内存里没有 Agent）不再被静默丢掉，而是作为**冷行**进清单，`SessionSummary` 增加可选字段 `cold: true` 标明身份。它能被读到、能被指名，但不参与 owner 继承也不算「默认送到这里」——一个还没有嘴的行不该看起来像默认目标
+  - 指名往冷行说话时按需 `resolveAgent` 把它**真的打开**（这也是 DSH 侧栏点开一个会话时走的路），而不是回一句「这个会话没开」。只对这一次点击付 resume 的代价，不为了填菜单把整台机器的会话都 resume
+  - `send()` 放行未绑定状态下的 `session-list`：这份清单是**菜单不是通知**，一个还在等 `ready` 的桌宠正是最需要知道"有什么可以打开"的读者。以前它被丢掉，导致桌宠在一个明明有会话的 Host 上完全看不见任何东西，直到某个会话恰好被 resume
+  - 订阅 `api-session/added` / `api-session/removed`，会话在启动之后变得可见、或消失时增量更新清单并 push `session-list`，不必只靠那一次启动扫描
+  - 子代理照旧排除：`parentSessionId` 非空或 `origin === 'subagent'` 的行不进清单——它属于开它的那个会话，列出来就是让桌宠去指别人的活
+- 顺手清掉一处自欺：旧代码把 `controller.list` 当集合读（`Array.isArray` 恒假，所以永远"没找到"却也不报错）。现在它的角色是明确的异步枚举，从探测列表里删掉
+- 只**追加**字段，旧桌宠忽略 `cold` 照常工作；`PROTOCOL_VERSION` 仍是 1
+- 测试：`tsc --noEmit` 通过；`vitest` **116 passed**（新增 3 条：冷行带标题出现在清单里且子代理不出现、指名冷行会 attach 后投递成功、Host 拒绝打开时回 `cannot-deliver` 而**不回退**到 owner）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
+
+## 0.2.23 — 未发布
+
+- **新增：会话清单里带「是否正在跑轮次」**（桌宠侧提出：`dsh_sessions` 除了标题，还要能看出每个会话是不是正在运行）。`SessionSummary` 增加可选字段 `running`，`listSessions()` 每行都带它：
+  - 首选 DSH 自己的 `agent.status`（`'idle' | 'running'`，是 Agent 上的实时属性，读一次就是当前值，不需要订阅事件），把它当作权威答案
+  - 读不到时退回本插件自己跟的 `turn/start` / `turn/end`（`noteTurnEvent` 维护的集合），所以老 Host 上这个字段依然能答，而不是永远空着
+  - 两者冲突时以 `agent.status` 为准：重载或恢复的会话可能在日志里留着未闭合的 turn，而 agent 其实空闲，这时报「还在跑」是桌宠会照着做错事的那种谎
+  - 会话被关闭时同步忘掉它的未闭合 turn，避免关掉的会话一直显示「正在跑」
+  - `turn/start` / `turn/end` 到达时顺带 push 一帧 `session-list`：状态变了就是菜单变了，桌宠不必等下次自己问
+- 只**追加**字段，旧桌宠忽略它照常工作；`PROTOCOL_VERSION` 仍是 1
+- 测试：`tsc --noEmit` 通过；`vitest` **113 passed**（新增 4 条：读 `agent.status`、退回轮次事件、状态优先于兜底、会话关闭后忘掉未闭合 turn）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
+
+## 0.2.22 — 未发布
+
+- **新增：会话清单里带会话标题**（由桌宠侧提出：只给 id 和目录，桌宠认不出哪条是"修 bug 的那个"、哪条是"聊另一个仓库的那个"，只能猜；猜就是发错的起点）。`SessionSummary` 增加可选字段 `title`，`listSessions()` 每行都带它：
+  - 标题不在 `SessionHeader` 里——DSH 把标题写成日志里的一条 `session/title` 事件（第一条用户消息之后追加），所以这里折一遍日志取最后一条，与 DSH 自己的 `foldSessionTitle` 等价
+  - 折叠结果按 session 缓存，之后由 `session/event` 的 `session/title` 分支增量更新（`rememberTitle`），不会每问一次清单就把长会话扫一遍
+  - 还没起名的会话给空串，桌宠据此知道"这条还没名字"，而不是"不认识它"
+  - `session/title` 到达时顺带 push 一帧 `session-list`：名字变了就是菜单变了，桌宠不必等下次自己问
+- 只**追加**字段，旧桌宠忽略它照常工作；`PROTOCOL_VERSION` 仍是 1
+- 测试：`tsc --noEmit` 通过；`vitest` **109 passed**（新增 5 条：带标题、未起名为空、改名取最后一条、增量更新不重复折叠、agent 无法提供日志时安全退化）；`node scripts/smoke.mjs` 全通过；`dist/index.cjs` 已重建
+
+## 0.2.21 — 未发布
+
+- **修复：模型自己的输出会抢走归属，把刚固定好的会话冲掉**（0.2.20 装机实测发现）。自动跟随此前只要看到"这个会话里有活动"就把 owner 挪过去，而 `assistant/message`、`turn/start`、`turn/end`、`tool/call` 全算活动——于是桌宠刚 `pick` 到 A，模型在 B 里继续回几条，owner 就被抢回 B 并连带清掉 pin：`dsh_sessions` 的「默认送到这里」标错、下一句话跟着发错，正是 0.2.20 想修掉的那个毛病的残留路径。现在只有**人**的动作才触发跟随：
+  - `user/message`（人真的在那里打字/说话）
+  - `approval/decided`（人给出的批准结论；`approval/asked` 只是系统在问，不算）
+  - 模型在哪干活不等于人在哪看——这条界线由 `src/session-watch.ts` 的 `isPersonActionEvent` 一处守住，`isActiveSessionEvent` 随之移除
+  - `forceOwner` 的语义不变：判定「人此刻在别处说话」时仍清掉旧 pin，因为那比一个几小时前的固定更强；变的只是谁能进这道门
+- 桌宠侧配套：`cortico-world-fatfish` ≥ 0.6.23 把 `dsh_sessions` 的标记拆成「你就指着这里」（桌宠自己的固定）与「默认送到这里」（Host 的 owner），两者分开显示——否则人在别处说话后，桌宠会把 Host 的落点当成自己的目标
+- 测试：`tsc --noEmit` 通过；`vitest` **104 passed**（新增「模型自己的输出不算人的动作」：`assistant/message` / `turn/start` / `turn/end` / `tool/call` / `approval/asked` 全部为否，`user/message` 与 `approval/decided` 为是）；`node scripts/smoke.mjs` 7 组端到端场景全通过；`dist/index.cjs` 已重建
+
+## 0.2.20 — 未发布
+
+- **修复"桌宠把消息发错会话"**：根因不在桌宠乱发，而在**两边都只能猜**。DSH 没有"当前聚焦会话"这个信号——在 DSH 里只是切标签页、不说话，一条 `session/event` 都不会发出（fatfish 0.6.11 的注释也记着同一件事）。于是 Host 只能把 `say` 投给它根据历史事件挑出的 newest-owner，那是个可能几小时没更新过的推测；桌宠按本地记住的目标发，两边一旦不同步，话就落进了 DSH 最后碰过的那个会话。这次把目标**显式化**，并在**说话那一刻**校验，而不是在瞄准那一刻：
+  - **`say` 可带 `session`（目标会话 id）**：带了就照办。Host 每次 `say` 都重新读实时列表，目标不在其中（已归档 / 已销毁 / 是子代理）就回 `refused` + `code: 'stale-session'` + 当前完整列表，**绝不悄悄回退到 owner**——静默改投正是发错会话的机制。不带 `session` 的旧桌宠行为完全不变（仍落 owner），所以**只升 Host 不会坏**
+  - **`accepted` 回执带落点**：`session`（这句话进了哪个会话）+ `sessions`（当时所有打开的会话）+ `pinned`。桌宠可以把落点显示给人看，发错了当场看得见，而不是靠事后翻会话
+  - **`refused` 带机器可读的 `code`**：`empty` / `nested-prefix` / `forwarding-off` / `no-session` / `stale-session` / `cannot-deliver` / `host-error`。桌宠不用解析英文句子就能决定下一步：`stale-session` → 从回执的列表里重选；`no-session` → `new`
+  - **`ready` 与会话开关时 push 完整列表**：`ready` 现在带 `sessions` / `pinned`，并且 `agent/created` 与 `session/disposed` 都会主动 push 一帧 `session-list`（带顶层 `owner`）。桌宠**一连上就知道**有哪些会话可选，不必先问一次；会话开了或关了，菜单也会自己更新——"发之前先确认会话列表"因此不再是一次额外往返
+  - **`list-sessions` 回帧顶层带 `owner`**：目标 `say` 会落进哪个会话，一眼可见，不用在数组里找 `owner: true`
+  - **Host 异常也会回执**：`say` 抛错时不再让桌宠干等满超时，而是回 `refused` 并说明原因
+- **「要不要新建会话」有了明确依据**：列表里没有任何一个可以指向的会话时（`no-session`，或列表为空）就该 `new`，而不是发一个指望 fallback 的 `say`。完整判断流程写在 `src/protocol.ts` 的 `SayOutcome` 上方注释里，是两边都要照着实现的契约
+- **去掉了两帧死代码**：`say` 成功/失败时发的 `notice`（`kind: 'forwarded'` / `forward-failed'`）桌宠侧从来没解析过（`parseHostFrame` 没有 `notice` 分支），落点信息现在由 `accepted` 回执承担，比多推一帧更靠得住
+- 兼容性：协议只做**追加**，`PROTOCOL_VERSION` 仍是 1；所有新字段可选，旧桌宠忽略它们照常工作
+- 桌宠侧对应改动：`cortico-world-fatfish` ≥ 0.6.22（`say` 带目标、发前核对列表、按 `code` 决定 `new`/重选/停止）。只升本插件不会坏，但要真正修掉发错会话，两边都要升
+- 测试：`tsc --noEmit` 通过；`vitest` **103 passed**（新增 13 项，涵盖"按名字投递而不是投给 owner"、"目标没了就拒收且不投递"、"无目标时仍投 owner"、"无会话时拒收并回空列表"、"首个 `ready` 带全量列表"、"会话开关 push 列表"、"`list-sessions` 顶层 owner"、Host 抛错仍回执）；`node scripts/smoke.mjs` 对**构建产物**跑 7 组端到端场景全通过；`dist/index.cjs` 已重建
+
 ## 0.2.19 — 已发布（GitHub Release）
 
 - **新建会话不再无限等待**：`createConversation` 对 `sessionController.commands.create` 加了 8 秒上限。此前这个调用没有任何超时，若 DSH 把新建排在正在跑的回合之后、或该版本命令形状变了而永不 resolve，插件就一直不回帧，桌宠干等 20 秒只能报「DSH did not answer in time」（讨论 [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) 里 YuYinDaJiang 的「开新会话接口超时」）。现在 8 秒即带原因失败，桌宠能把原因念出来，自动交接也不会被卡死

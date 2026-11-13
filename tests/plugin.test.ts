@@ -146,13 +146,19 @@ describe('the plugin as DSH loads it', () => {
     // Socket opens (HTTP 101) — old behaviour was a 503 refusal here.
     expect(socket.readyState).toBe(WebSocket.OPEN);
     send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
-    // No `ready` yet (no agent/created event fired).
+    // No `ready` yet (no agent/created event fired) — but the menu may arrive: a pet that cannot be
+    // bound yet is exactly the reader that needs to know what exists. On this Host it is empty.
     await new Promise<void>((done) => setTimeout(done, 200));
-    expect(frames).toEqual([]);
+    expect(frames.filter((frame) => frame.t === 'ready')).toEqual([]);
+    expect(frames.filter((frame) => frame.t === 'session-list')).toEqual([
+      expect.objectContaining({ t: 'session-list', sessions: [] }),
+    ]);
     // Now a conversation appears — plugin should fire notifyBound internally.
     emit('agent/created', { agent: agentOf('session-1') });
-    await until(() => frames.length > 0);
-    expect(frames[0]).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    // The menu may precede it (a waiting pet is told what exists), so find the `ready` rather than
+    // assuming it is the very first frame on the wire.
+    expect(frames.find((frame) => frame.t === 'ready')).toMatchObject({ t: 'ready', v: PROTOCOL_VERSION, session: 'session-1' });
   });
 });
 
@@ -422,19 +428,166 @@ describe('a question the assistant asks', () => {
   });
 });
 
-describe('a line from the pet', () => {
-  // Not covered yet: the success path through `agent/created` → `followup` does not register the
-  // agent under this fake context, and the cause is not yet known. Everything the path is built
-  // from is covered — `AgentRegistry` in protocol.test.ts, the socket and its `welcome` refusal in
-  // pet-hub.test.ts, and the message the line becomes below. The greeting needs no agent, so the
-  // two cases here still exercise the real socket.
-  it.skip('is submitted to the owning conversation', async () => {
-    const { emit, connect } = await loaded();
-    emit('agent/created', { agent: agentOf('session-1') });
+describe('the conversations DSH lists but this process never resumed', () => {
+  it('are handed to the pet as names, with the titles DSH keeps for them', async () => {
+    // The bug this covers: the sidebar showed sixteen conversations and the bridge offered the two
+    // that happened to be resumed, so the pet could not read the name of the one it was meant to
+    // speak into. `sessionController.list()` answers every visible Session without resuming one.
+    const { connect } = await loaded({
+      sessionController: {
+        list: async () => ({
+          items: [
+            { sessionId: 'session-live', cwd: '/w/a', running: true, agentAvailable: true, projections: { values: { title: '正在修的那个' } } },
+            { sessionId: 'session-cold', cwd: '/w/a', running: false, agentAvailable: false, projections: { values: { title: '上周那个' } } },
+            { sessionId: 'session-child', cwd: '/w/a', parentSessionId: 'session-live', origin: 'subagent' },
+          ],
+        }),
+      },
+    });
+    const { frames, send } = await connect();
+    // No `agent/created` for `session-live`: the Host says it has an Agent, but this test never
+    // hands one over, which is exactly the shape that used to make the list two rows long.
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    // No conversation here is reachable yet, so there is no `ready` — but the pet must still learn
+    // what exists. A menu delivered only after binding left it blind on exactly this Host.
+    await until(() => {
+      const list = frames.filter((frame) => frame.t === 'session-list').at(-1);
+      return Boolean(list && (list.sessions as Array<{ id: string }>).length === 2);
+    });
+    const sessions = frames.filter((frame) => frame.t === 'session-list').at(-1)!.sessions as Array<Record<string, unknown>>;
+    expect(sessions.map((entry) => entry.id)).toEqual(['session-live', 'session-cold']);
+    expect(sessions[1]).toMatchObject({ id: 'session-cold', title: '上周那个', cold: true, owner: false, running: false });
+    // The subagent DSH lists under its parent is not a target and must not appear as one.
+    expect(sessions.some((entry) => entry.id === 'session-child')).toBe(false);
+  });
+
+  it('can be spoken into: the Host attaches an Agent when a listed conversation is named', async () => {
+    // Reading a name is not enough — the pet has to be able to *reach* the conversation it read.
+    // DSH attaches an Agent on demand; refusing here would leave the sixteenth conversation visible
+    // and unreachable, which is a different way of being wrong.
+    const opened = agentOf('session-cold');
+    const resolveAgent = async (id: string): Promise<unknown> => (id === 'session-cold' ? { agent: opened } : undefined);
+    const { connect } = await loaded({
+      sessionController: {
+        list: async () => ({
+          items: [
+            { sessionId: 'session-1', cwd: '/w/a', agentAvailable: true },
+            { sessionId: 'session-cold', cwd: '/w/a', agentAvailable: false, projections: { values: { title: '上周那个' } } },
+          ],
+        }),
+        agents: { resolveAgent },
+      },
+    });
     const { frames, send } = await connect();
     send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
-    await until(() => frames.length > 0);
-    send({ t: 'say', id: 'a1', text: '帮我看下构建', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'ready' || frame.t === 'session-list'));
+    // `session-1` is the only owner (the cold row never claims ownership), so naming the cold one
+    // is a deliberate switch, not a default.
+    send({ t: 'say', id: 'c1', text: '接着上周那个说', from: '大肥鱼', session: 'session-cold' });
+    await until(() => frames.some((frame) => frame.t === 'accepted' || frame.t === 'refused'));
+    const ack = frames.find((frame) => frame.t === 'accepted' || frame.t === 'refused')!;
+    expect(ack).toMatchObject({ t: 'accepted', id: 'c1', session: 'session-cold' });
+    expect(opened.injected).toHaveLength(1);
+  });
+
+  it('is refused, not silently rerouted, when the Host will not open the named one', async () => {
+    const only = agentOf('session-1');
+    const { emit, connect } = await loaded({
+      sessionController: {
+        list: async () => ({
+          items: [
+            { sessionId: 'session-1', cwd: '/w/a', agentAvailable: true },
+            { sessionId: 'session-locked', cwd: '/w/a', agentAvailable: false },
+          ],
+        }),
+        agents: {
+          resolveAgent: async (id: string) => (id === 'session-locked' ? { error: { code: 'session/writer-held' } } : undefined),
+        },
+      },
+    });
+    emit('agent/created', { agent: only });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'c2', text: '在这说', from: '大肥鱼', session: 'session-locked' });
+    await until(() => frames.some((frame) => frame.t === 'refused'));
+    const refused = frames.find((frame) => frame.t === 'refused')!;
+    expect(refused).toMatchObject({ t: 'refused', id: 'c2', code: 'cannot-deliver' });
+    // A refusal must not fall back to the owner: that fallback is how a line lands in the wrong one.
+    expect(only.injected).toHaveLength(0);
+  });
+});
+
+describe('a line from the pet', () => {
+  it('is submitted to the conversation the pet names, not to a guess', async () => {
+    // Two conversations are open. The owner is the newest one — but the pet named the older one,
+    // and a name is an instruction: delivering to the owner instead is exactly the misroute this
+    // handshake exists to stop.
+    const older = agentOf('session-old');
+    const newer = agentOf('session-new');
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: older });
+    emit('agent/created', { agent: newer });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'a1', text: '帮我看下构建', from: '大肥鱼', session: 'session-old' });
+    await until(() => frames.some((frame) => frame.t === 'accepted' || frame.t === 'refused'));
+    const ack = frames.find((frame) => frame.t === 'accepted' || frame.t === 'refused')!;
+    expect(ack).toMatchObject({ t: 'accepted', id: 'a1', session: 'session-old' });
+    expect(older.injected).toHaveLength(1);
+    expect(newer.injected).toHaveLength(0);
+  });
+
+  it('is refused with a readable code when the named conversation is gone', async () => {
+    const only = agentOf('session-1');
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: only });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'a2', text: '在吗', from: '大肥鱼', session: 'session-gone' });
+    await until(() => frames.some((frame) => frame.t === 'refused'));
+    const refused = frames.find((frame) => frame.t === 'refused')!;
+    expect(refused).toMatchObject({
+      t: 'refused',
+      id: 'a2',
+      code: 'stale-session',
+      session: 'session-1',
+      sessions: [{ id: 'session-1', owner: true }],
+    });
+    expect(refused.reason).toContain('no longer open');
+    // The words went nowhere: a refusal must not fall back to the owner.
+    expect(only.injected).toHaveLength(0);
+  });
+
+  it('still delivers to the owning conversation when the pet names none', async () => {
+    // The older pet contract carries no `session`; it must keep working exactly as before.
+    const owner = agentOf('session-1');
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: owner });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'say', id: 'a3', text: '老协议', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'accepted'));
+    expect(frames.find((frame) => frame.t === 'accepted')).toMatchObject({ t: 'accepted', session: 'session-1' });
+    expect(owner.injected).toHaveLength(1);
+  });
+
+  it('is refused, with the list, when nothing is open to speak into', async () => {
+    const { connect } = await loaded();
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await new Promise((done) => setTimeout(done, 100));
+    send({ t: 'say', id: 'a4', text: '有人吗', from: '大肥鱼' });
+    await until(() => frames.some((frame) => frame.t === 'refused'));
+    expect(frames.find((frame) => frame.t === 'refused')).toMatchObject({
+      t: 'refused',
+      id: 'a4',
+      code: 'no-session',
+      sessions: [],
+    });
   });
 
   it('is refused when the pet speaks another protocol revision', async () => {
@@ -444,6 +597,56 @@ describe('a line from the pet', () => {
     const closed = new Promise<number>((done) => socket.once('close', (code) => done(code)));
     send({ t: 'hello', v: PROTOCOL_VERSION + 1, name: 'Coo' });
     expect(await closed).toBe(4002);
+  });
+});
+
+describe('what the pet is told about open conversations', () => {
+  it('gets the whole list on the first frame, without asking', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    emit('agent/created', { agent: agentOf('session-2') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    const ready = frames.find((frame) => frame.t === 'ready')!;
+    expect(ready).toMatchObject({ t: 'ready', session: 'session-2', pinned: false });
+    expect((ready.sessions as Array<{ id: string }>).map((entry) => entry.id)).toEqual(['session-1', 'session-2']);
+  });
+
+  it('is told again whenever the menu changes', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    const before = frames.filter((frame) => frame.t === 'session-list').length;
+    emit('agent/created', { agent: agentOf('session-2') });
+    await until(() => frames.filter((frame) => frame.t === 'session-list').length > before);
+    const pushed = frames.filter((frame) => frame.t === 'session-list').at(-1)!;
+    expect((pushed.sessions as Array<{ id: string }>).map((entry) => entry.id)).toEqual(['session-1', 'session-2']);
+
+    // A disposed conversation is a menu change too: the pet must stop aiming at it.
+    emit('session/disposed', { id: 'session-1' });
+    await until(() => {
+      const last = frames.filter((frame) => frame.t === 'session-list').at(-1)!;
+      return (last.sessions as Array<{ id: string }>).every((entry) => entry.id !== 'session-1');
+    });
+  });
+
+  it('answers an explicit list-sessions request with the owner named at the top', async () => {
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    emit('agent/created', { agent: agentOf('session-2') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    send({ t: 'list-sessions' });
+    await until(() => frames.some((frame) => frame.t === 'session-list'));
+    expect(frames.find((frame) => frame.t === 'session-list')).toMatchObject({
+      t: 'session-list',
+      owner: 'session-2',
+      pinned: false,
+    });
   });
 });
 

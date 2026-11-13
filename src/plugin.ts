@@ -18,7 +18,7 @@ import type { Duplex } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { PET_PATH, PROTOCOL_VERSION, PetHub } from './pet-hub.ts';
-import { AgentRegistry, isActiveSessionEvent, noticeOf, type SessionEventLike } from './session-watch.ts';
+import { AgentRegistry, isPersonActionEvent, noticeOf, type LiveAgent as LiveAgentLike, type SessionEventLike } from './session-watch.ts';
 import { readForwardState, writeForwardState } from './forward-state.ts';
 import { argumentNames, assistantText, carriesBridgePrefix, questionTextOf, reasonText, type HostFrame } from './protocol.ts';
 import { createConversation, type SessionCommandsLike, type WorkspaceLike } from './new-session.ts';
@@ -288,17 +288,74 @@ export function buildUserMessage(
 }
 
 /**
- * Pick up conversations that were already open when this Host started.
+ * One row of `sessionController.list()` — the Host's own sidebar, as much of it as this bridge reads.
  *
- * On desktop builds DSH does not always re-emit `agent/created` for sessions the person opened
- * before the plugin loaded — leaving the registry empty and the pet stuck on "no conversation is
- * open" until the person speaks again. The Session Controller is the same object the settings
- * window uses, so it is the most likely place an enumeration lives; this probes the method names
- * such objects typically carry and registers every agent it can actually submit a message to.
+ * Only the fields that carry a decision are declared. `agentAvailable` is the important one: it says
+ * whether this process already holds an Agent for the conversation, which is exactly the difference
+ * between "a conversation we can speak into" and "a name we can show".
+ */
+interface ListedSessionRow {
+  sessionId?: unknown;
+  cwd?: unknown;
+  running?: unknown;
+  parentSessionId?: unknown;
+  origin?: unknown;
+  agentAvailable?: unknown;
+  projections?: { values?: { title?: unknown } } | undefined;
+}
+
+/**
+ * Ask DSH which conversations exist — the same list its sidebar shows.
  *
- * Best-effort by design: DSH's internal API is not typed here, so every access is guarded and an
- * unknown shape is a no-op. The result is logged so a missing enumeration is visible in the bridge
- * log rather than silently producing an empty registry.
+ * `sessionController.list()` is the Host's own answer to that question, documented as reading every
+ * visible Session *without resuming an Agent*. It is the only enumeration that is both complete and
+ * free: `workspaceRegistry.list()` reports `sessionIds` already filtered down by DSH's access
+ * control, which on a desktop Host is what left this bridge looking at zero sessions while the
+ * person had sixteen open.
+ *
+ * Answers an empty array when the Host exposes no such method, so an older build costs the pet the
+ * extra rows rather than the whole list.
+ */
+async function listSessionsFromHost(controller: unknown): Promise<ListedSessionRow[]> {
+  const list = (controller as { list?: unknown } | undefined)?.list;
+  if (typeof list !== 'function') return [];
+  try {
+    // DSH passes a cursor and an abort signal; both are optional and a plain call is what the
+    // settings window's own Remote call reduces to.
+    const answer = await (list as (request?: unknown) => Promise<unknown>).call(controller, {});
+    const items = (answer as { items?: unknown } | null | undefined)?.items;
+    return Array.isArray(items) ? (items as ListedSessionRow[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The title DSH holds for a listed conversation, or '' when it has none yet. */
+function titleOfRow(row: ListedSessionRow): string {
+  const title = row.projections?.values?.title;
+  return typeof title === 'string' ? title : '';
+}
+
+/**
+ * Pick up conversations DSH knows about, whether or not this process holds an Agent for them.
+ *
+ * Two things were wrong before 0.2.24, and they compounded:
+ *
+ *   1. The enumeration read `workspaceRegistry.list()`, whose `sessionIds` DSH filters through
+ *      access control. On a desktop Host that answered zero, so this function registered nothing
+ *      and only `agent/created` ever filled the map — two conversations on a machine with sixteen
+ *      open.
+ *   2. A conversation present on disk but not resumed has no Agent here, so it was dropped as
+ *      unusable. That is true for *delivery*, but it left the pet unable to even read the names of
+ *      the conversations the person was choosing between.
+ *
+ * So the list is now DSH's, and rows split two ways: ones with an Agent are registered as before,
+ * ones without are remembered by the registry and shown to the pet without a mouth. Speaking into
+ * one still works — DSH attaches an Agent on demand (see the `say` path) — but nothing here resumes
+ * sixteen conversations to fill a menu.
+ *
+ * Still best-effort: the Host's internal surface is not typed here, so an unknown shape costs the
+ * pet rows, never the plugin.
  */
 async function rescanExistingSessions(
   scoped: DshContext,
@@ -310,8 +367,16 @@ async function rescanExistingSessions(
     const controller = scoped.get('sessionController') as AnyObj | undefined;
     const registry = scoped.get('workspaceRegistry') as { list?: () => Array<{ sessionIds?: string[] }> } | undefined;
 
-    // 1. Collect candidate session ids from the workspace registry.
+    // 1. The candidate set: DSH's own list first, then the workspace registry for whatever it adds.
+    //    The two disagree on purpose — the registry knows which project a conversation belongs to,
+    //    the list knows which conversations exist — and a conversation is worth showing to the pet
+    //    if either source names it.
     const ids = new Set<string>();
+    const rows: ListedSessionRow[] = await listSessionsFromHost(controller);
+    for (const row of rows) {
+      const id = String(row.sessionId ?? '');
+      if (id) ids.add(id);
+    }
     try {
       for (const workspace of registry?.list?.() ?? []) {
         for (const id of workspace.sessionIds ?? []) if (id) ids.add(id);
@@ -351,8 +416,10 @@ async function rescanExistingSessions(
       register(id, agent);
     }
 
-    // 3. If the controller exposes a flat list of agents directly, register those too.
-    for (const coll of ['agents', 'sessions', 'list', 'listSessions'] as const) {
+    // 3. If the controller exposes a flat collection of agents directly, register those too.
+    //    `list` is deliberately absent: it is the async enumeration read in step 1, and reading a
+    //    function as if it were a collection is how this probe used to hide its own failure.
+    for (const coll of ['agents', 'sessions', 'live'] as const) {
       const c = (controller as AnyObj | undefined)?.[coll];
       const items: unknown[] = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
       for (const item of items) {
@@ -364,12 +431,26 @@ async function rescanExistingSessions(
     // 4. Async entry points. On DSH 0.2.1-rc.5 `controller.agents` is an ApiSessionAgentController
     //    whose `resolveAgent(id)` answers a Promise, which every synchronous probe above misses: the
     //    reported symptom was `sessionIds: 2, registered: 0` even though the sessions were open.
+    //
+    //    Only ids DSH reports as already having an Agent are resolved: `resolveAgent` *resumes* a
+    //    conversation, and resuming every conversation on the machine to fill a picker would turn
+    //    opening a menu into loading sixteen session logs. A cold row is left cold on purpose.
+    const available = new Set<string>();
+    for (const row of rows) {
+      const id = String(row.sessionId ?? '');
+      // Older Hosts may not report `agentAvailable` at all; assume available so behaviour there is
+      // exactly what it was before this field existed.
+      if (id && row.agentAvailable !== false) available.add(id);
+    }
+    // A Host with no `list()` at all tells us nothing about availability, so every candidate stays
+    // eligible: that is the pre-0.2.24 path, and it must not become "nothing is resumable".
+    const listUnavailable = rows.length === 0;
     let fromAsync = 0;
     let holder: AnyObj | undefined;
     try { holder = (controller as AnyObj | undefined)?.agents as AnyObj | undefined; } catch { holder = undefined; }
     if (holder && !(holder instanceof Map) && !Array.isArray(holder)) {
       for (const id of ids) {
-        if (registered.has(id)) continue;
+        if (registered.has(id) || (!listUnavailable && !available.has(id))) continue;
         for (const name of ['resolveAgent', 'get', 'getAgent'] as const) {
           const fn = holder[name];
           if (typeof fn !== 'function') continue;
@@ -383,16 +464,81 @@ async function rescanExistingSessions(
       }
     }
 
-    log('rescan-existing', { sessionIds: ids.size, registered: registered.size, fromAsync });
+    // 5. Everything DSH lists that still has no Agent here becomes a row the pet can *read*.
+    //
+    //    This is the half that was missing entirely: the sidebar showed sixteen conversations and
+    //    the bridge offered two, so the pet's picture of "where the person might be" was wrong
+    //    before it ever chose a target. Subagents are dropped (they are never an owner and never
+    //    an answer to "which conversation"), and archived ones too.
+    const cold = rows
+      .filter((row) => {
+        const id = String(row.sessionId ?? '');
+        if (!id || registered.has(id)) return false;
+        if (String(row.parentSessionId ?? '') !== '') return false;
+        return row.origin !== 'subagent';
+      })
+      .map((row) => ({
+        id: String(row.sessionId),
+        cwd: typeof row.cwd === 'string' ? row.cwd : '',
+        title: titleOfRow(row),
+        running: row.running === true,
+      }));
+    const listed = agents.noteListed(cold);
+
+    log('rescan-existing', { sessionIds: ids.size, registered: registered.size, fromAsync, listed });
   } catch (err) {
     log('rescan-existing-failed', { error: (err as Error).message });
   }
 }
 
+/**
+ * Open one conversation DSH lists but this process holds no Agent for, and register it.
+ *
+ * `resolveAgent` is the Host's own "attach an Agent to this existing conversation" call — the same
+ * one the settings window reaches for when a conversation is opened from the sidebar. It costs a
+ * resumed session log, which is exactly why it is called here (for the one conversation the pet is
+ * about to speak into) and never while filling the list.
+ *
+ * Answers the registered agent, or null when the Host declines (archived, already owned elsewhere,
+ * gone from disk) — the caller refuses in that case rather than guessing at another target.
+ */
+async function attachSession(
+  scoped: DshContext,
+  agents: AgentRegistry,
+  sessionId: string,
+  log: (tag: string, detail?: unknown) => void,
+): Promise<LiveAgentLike | null> {
+  const controller = scoped.get('sessionController') as Record<string, unknown> | undefined;
+  const holder = controller?.agents as Record<string, unknown> | undefined;
+  const resolve = holder?.resolveAgent;
+  if (typeof resolve !== 'function') {
+    log('attach-session-unsupported', { sessionId });
+    return null;
+  }
+  try {
+    const found = await (resolve as (id: string) => Promise<unknown>).call(holder, sessionId);
+    // `resolveAgent` answers `{ agent }` on the documented shape and a bare agent on some builds;
+    // it may also answer `{ error }`, which is a refusal and not an agent.
+    const candidate = (found as { agent?: unknown } | null | undefined)?.agent ?? found;
+    const a = candidate as LiveAgentLike | undefined;
+    if (!a || typeof a.followup !== 'function' || String(a.session?.id ?? '') !== sessionId) {
+      log('attach-session-refused', { sessionId, shape: found === undefined ? 'undefined' : typeof found });
+      return null;
+    }
+    agents.add(sessionId, a);
+    log('attach-session', { sessionId });
+    return a;
+  } catch (err) {
+    // A conversation archived between the list and the say lands here, as does one another window
+    // holds. Both mean "not this one", which the caller turns into a refusal with a code.
+    log('attach-session-failed', { sessionId, error: (err as Error).message });
+    return null;
+  }
+}
+
 export default {
   name: PLUGIN_NAME,
-  apply(root: DshContext): void {
-    proveLoad();
+  apply(root: DshContext): void {    proveLoad();
     installSocketErrorGuard((line) => {
       const logger = root.get('logger') as { warn?(m: string): void } | undefined;
       logger?.warn?.(line);
@@ -436,6 +582,18 @@ export default {
     /** Notices sent while no pet is listening are dropped: a stale turn is worse than a missed one. */
     const notify = (frame: HostFrame): void => {
       hub?.send(frame);
+    };
+
+    /**
+     * Hand the pet the current list of open conversations.
+     *
+     * Called whenever one is opened or disposed, even if the owner did not move: a pet told only
+     * about owner changes still believes a conversation it is holding is open after it is gone,
+     * which is how a `say` ends up addressed to something that no longer exists.
+     */
+    const pushSessions = (): void => {
+      if (!hub?.connected) return;
+      hub.send({ t: 'session-list', sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession });
     };
 
     /**
@@ -484,7 +642,14 @@ export default {
         rescanning = rescanExistingSessions(scoped, agents, logLine)
           .then(() => {
             const facts = agents.facts();
+            // Bind the pet first when it is still waiting, then hand it the menu: a `ready` carries
+            // the list too, so a pet that just connected ends up with both in one frame.
             if (facts && hub?.connected) hub.notifyBound(facts);
+            // A rescan that only *reads* DSH's list can change the menu without changing the owner
+            // (the sixteen conversations that were never resumed). Without this push the pet would
+            // keep the short list it was greeted with until it asked again — which is precisely the
+            // state that made it aim at the wrong conversation.
+            pushSessions();
           })
           .finally(() => { rescanning = null; });
         return rescanning;
@@ -504,37 +669,106 @@ export default {
           }
           knownCwd = facts.cwd || knownCwd;
           debug('welcome-ok', facts);
-          return facts;
+          // The first frame a pet ever sees also names every open conversation, so it starts out
+          // knowing where it is speaking and what else it could speak into.
+          return { ...facts, sessions: agents.listSessions(), pinned: agents.isPinned };
         },
-        say: async (text, from) => {
+        say: async (text, from, target) => {
           const body = text.trim();
-          if (!body) return 'empty message';
-          if (carriesBridgePrefix(body)) return 'this line already carries the bridge\'s prefix, so a second one would be nested around it';
-          if (!agents.forwarding) return 'auto-forward disabled — open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel';
+          if (!body) return { reason: 'empty message', code: 'empty' as const };
+          if (carriesBridgePrefix(body)) {
+            return { reason: 'this line already carries the bridge\'s prefix, so a second one would be nested around it', code: 'nested-prefix' as const };
+          }
+          if (!agents.forwarding) {
+            return { reason: 'auto-forward disabled — open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel', code: 'forwarding-off' as const };
+          }
+          // Re-read the live list on every say. The owner the registry holds was chosen from events
+          // that may never have arrived (DSH is silent on a plain tab switch), so this is the one
+          // place where what we are about to do is checked against what is actually open.
+          const sessions = agents.listSessions();
+          const known = new Set(sessions.filter((session) => !session.subagent).map((session) => session.id));
+          const ownerSession = agents.ownerSession;
+          // A named conversation is an instruction, not a hint: deliver there or refuse. Falling
+          // back to the owner here is exactly how a person's line lands in another conversation.
+          if (target !== undefined) {
+            if (!known.has(target)) {
+              debug('say-refused-stale-target', { target, ownerSession, liveCount: known.size });
+              return {
+                reason: `conversation ${target} is no longer open (it was archived, disposed, or was a subagent); pick one of the open conversations before speaking`,
+                code: 'stale-session' as const,
+                session: ownerSession,
+                sessions,
+                pinned: agents.isPinned,
+              };
+            }
+            // A conversation DSH lists but this process holds no Agent for is still a conversation
+            // the person can be looking at — the sidebar's sixteen versus the two resumed ones. Take
+            // it into the live map now, which is also DSH's own on-demand behaviour: the Agent is
+            // attached when something is first said there. Refusing here instead would leave the pet
+            // able to *see* the sixteenth conversation and unable to *reach* it.
+            if (agents.liveGet(target) === undefined) {
+              const attached = await attachSession(scoped, agents, target, logLine);
+              if (!attached) {
+                debug('say-attach-failed', { target, ownerSession });
+                return {
+                  reason: `conversation ${target} is listed by DSH but could not be opened to speak into; pick another one`,
+                  code: 'cannot-deliver' as const,
+                  session: ownerSession,
+                  sessions,
+                  pinned: agents.isPinned,
+                };
+              }
+            }
+            // Re-read the owner: attaching an Agent makes it the newest conversation, so it may
+            // already own the registry by the time we get here — and `forceOwner` reports false for
+            // "already the owner", which is not a failure.
+            const nowOwner = agents.ownerSession;
+            if (target !== nowOwner && !agents.forceOwner(target)) {
+              return {
+                reason: `conversation ${target} could not be made the owner; pick it again`,
+                code: 'stale-session' as const,
+                session: nowOwner,
+                sessions,
+                pinned: agents.isPinned,
+              };
+            }
+            if (target !== ownerSession) {
+              // The owner really moved: tell the pet, so its panel and its next target agree.
+              const facts = agents.facts();
+              if (facts && hub?.connected) hub.notifyBound(facts);
+            }
+          }
           const agent = agents.owner;
           if (!agent) {
             debug('say-refused-no-owner', {
               liveCount: agents.liveSize,
-              ownerSession: agents.ownerSession,
+              ownerSession,
               isPinned: agents.isPinned,
               forwarding: agents.forwarding,
             });
-            return 'no conversation is open on the DSH side; a new one can be started with dsh_new_session';
+            return {
+              reason: 'no conversation is open on the DSH side; create one before speaking',
+              code: 'no-session' as const,
+              session: null,
+              sessions,
+              pinned: agents.isPinned,
+            };
           }
-          if (typeof agent.followup !== 'function') return 'this DSH build cannot accept a message here';
+          if (typeof agent.followup !== 'function') {
+            return { reason: 'this DSH build cannot accept a message here', code: 'cannot-deliver' as const, session: ownerSession, sessions };
+          }
+          const delivered = agents.ownerSession;
           try {
             await resolveFactory();
             agent.followup(buildUserMessage(`${from}（通过桌宠）说：${body}`, userTemplate));
-            // 告诉桌宠它的话已经递到 DSH 了——让 Coo 知道这件事"真的发生了"。
-            hub?.send({ t: 'notice', kind: 'forwarded', text: `已递送到 DSH（会话 ${agents.ownerSession ?? '?'}）：${body.slice(0, 80)}${body.length > 80 ? '…' : ''}` });
             return null;
           } catch (err) {
-            hub?.send({ t: 'notice', kind: 'forward-failed', text: `递送失败：${(err as Error).message}` });
-            return `DSH refused the message: ${(err as Error).message}`;
+            debug('say-failed', { session: delivered, error: (err as Error).message });
+            return { reason: `DSH refused the message: ${(err as Error).message}`, code: 'host-error' as const, session: delivered, sessions };
           }
         },
         pick: (session) => (agents.setOwner(String(session)) ? null : 'no such open conversation'),
-        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned }),
+        listSessions: () => ({ sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession }),
         unpin: () => {
           agents.clearPin();
           return null;
@@ -892,6 +1126,33 @@ export default {
       pending.length = 0;
     });
 
+    // DSH announces a conversation becoming visible with its whole summary — the same rows its
+    // sidebar draws from. Subscribing keeps the pet's menu current without re-reading the list: it
+    // is how a conversation opened *after* startup joins the menu the pet already holds.
+    //
+    // Best-effort like the rest of this file: a Host that never emits this simply keeps the list it
+    // read at startup, which is still every conversation that existed then.
+    root.on('api-session/added', ((summary: { sessionId?: unknown; cwd?: unknown; running?: unknown; parentSessionId?: unknown; origin?: unknown; agentAvailable?: unknown; projections?: { values?: { title?: unknown } } }) => {
+      const id = String(summary?.sessionId ?? '');
+      if (!id) return;
+      // A subagent is never a target and never a menu entry: it belongs to the conversation that
+      // started it, and offering it would let the pet aim at someone else's work.
+      if (String(summary.parentSessionId ?? '') !== '' || summary.origin === 'subagent') return;
+      if (summary.agentAvailable === true) return;  // an `agent/created` covers this path
+      const title = summary.projections?.values?.title;
+      if (agents.noteListedOne(id, {
+        cwd: typeof summary.cwd === 'string' ? summary.cwd : '',
+        title: typeof title === 'string' ? title : '',
+        running: summary.running === true,
+      })) {
+        pushSessions();
+      }
+    }) as never);
+
+    root.on('api-session/removed', ((sessionId: unknown) => {
+      if (agents.forgetListed(String(sessionId ?? ''))) pushSessions();
+    }) as never);
+
     root.on('agent/created', ((payload: CreatedPayload) => {
       const agent = payload?.agent;
       const id = agent?.session?.id;
@@ -919,6 +1180,8 @@ export default {
       // If the pet is waiting (connected but no session yet), give it a late `ready` now.
       const facts = agents.facts();
       if (facts && hub && hub.connected) hub.notifyBound(facts);
+      // Also tell it what else is open: a new conversation changes the menu, not just the target.
+      pushSessions();
     }) as never);
 
     root.on('session/disposed', ((session: { id?: string }) => {
@@ -932,6 +1195,9 @@ export default {
         if (facts) hub.notifyBound(facts);    // a new owner is available
         else hub.notifyUnbound();              // no owner left
       }
+      // A conversation disappearing changes the list even when it was not the owner — a pet
+      // holding it as its target would otherwise never learn it is gone.
+      pushSessions();
     }) as never);
 
     root.on('session/event', ((session: { id?: string }, event: SessionEventLike) => {
@@ -945,17 +1211,35 @@ export default {
         // 即便这个 session 不是 owner，也缓存一下，切过来时能直接读到
         return;
       }
+      // 缓存标题：DSH 在会话被起名时（第一条用户消息之后）追加一条 session/title，
+      // 标题只存在于日志里、不在 header 里。同样不限于 owner —— 桌宠要能认出每一个开着的会话。
+      if (event?.type === 'session/title') {
+        const title = typeof data.title === 'string' ? data.title : '';
+        agents.rememberTitle(id, title);
+        // 名字变了就是菜单变了：让桌宠手里的那份清单跟着更新，而不是等它下次自己问。
+        pushSessions();
+        return;
+      }
+      // 记下轮次的开合：`agent.status` 读不到时，「这个会话是不是在跑」就靠它兜底。
+      // 顺手在轮次起止时推一次清单 —— 「正在运行」这个状态正是桌宠最需要及时知道的东西，
+      // 否则它只能靠下次自己问，而那时候事情早就过去了。
+      if (event?.type === 'turn/start' || event?.type === 'turn/end') {
+        agents.noteTurnEvent(id, event);
+        pushSessions();
+      }
       debug('session-event', { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
-      // Auto-follow：当一个已经存在的会话开始活跃（用户说话 / 模型回复 / 工具调用 / 审批），
-      // 而桌宠还在跟着另一个会话时，把 owner 切过来，让桌宠的 status 和转发目标都对齐到
-      // 用户当前在 DSH 里真正操作的那个会话。forceOwner 内部会把 pinned 清掉——用户在别的
-      // 会话说话这个行为，比之前的 pin（无论显式还是桌宠同步来的）表达更强的当前意图。
-      if (agents.ownerSession !== id && isActiveSessionEvent(event)) {
+      // Auto-follow：只对**人真的动手**的事件生效（用户说话、答复审批）。
+      // 模型的输出（assistant/message、turn/start、turn/end、tool/call）刻意不算：模型在哪干活
+      // 不等于人在哪看。桌宠刚指名把话交给 A，我在 B 里继续回了几条，owner 就跟着 B 走、pin 也被
+      // 清掉 —— 那正是「默认送到这里」标错、下一句发错会话的成因。人的动作仍然比 pin 强：
+      // 那是一个人当场表达的位置，所以 forceOwner 照旧会清 pin，让标记不会悄悄跟着挪到别的会话。
+      if (agents.ownerSession !== id && isPersonActionEvent(event)) {
         const agent = agents.liveGet(id);
         debug('auto-follow-check', { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {
+          const wasPinned = agents.isPinned;
           if (agents.forceOwner(id)) {
-            debug('auto-follow-moved', { newOwner: id });
+            debug('auto-follow-moved', { newOwner: id, wasPinned });
             const facts = agents.facts();
             if (facts && hub?.connected) hub.notifyBound(facts);
           }
