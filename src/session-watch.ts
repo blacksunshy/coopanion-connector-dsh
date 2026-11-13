@@ -24,6 +24,49 @@ export interface AgentFacts {
   model: string;
 }
 
+/**
+ * A conversation DSH reports as existing while this process holds no Agent for it.
+ *
+ * DSH's own session list calls these rows cold: they are on disk, they carry a title and a
+ * directory in the sidebar, and opening one loads it. The bridge keeps them out of the live map
+ * because there is nothing to submit a message to until DSH attaches an Agent — but it still
+ * *lists* them, because a pet that can only see the two conversations this process happened to
+ * resume cannot tell "the bug-fix conversation" from "the one about the other repo", and a name it
+ * cannot read is a name it cannot check itself against before speaking.
+ *
+ * Not listing them was the second half of the wrong-session bug: the sidebar showed sixteen
+ * conversations and the pet was offered two, so every session it knew about was a guess's worth of
+ * stale.
+ */
+export interface ListedSession {
+  cwd: string;
+  title: string;
+  running: boolean;
+}
+
+/** One row of the list the pet is handed: a conversation it can aim at. */
+export interface SessionRow {
+  id: string;
+  cwd: string;
+  model: string;
+  title: string;
+  running: boolean;
+  owner: boolean;
+  pinned: boolean;
+  subagent: boolean;
+  /**
+   * True when DSH lists this conversation but this process holds no Agent for it yet.
+   *
+   * Nothing about the pet's behaviour changes — a `say` aimed here still gets delivered, because
+   * the Host attaches an Agent on demand. It is reported so a reader (and a bug report) can tell
+   * "the sidebar's sixteen" from "the two this process happens to hold".
+   *
+   * Present only on cold rows: absent on a live one is not a claim, it is the shape every older
+   * Host answers with, and a reader must not have to tell "false" from "unreported".
+   */
+  cold?: boolean;
+}
+
 /** DSH's session header: where cwd and subagent flags actually live. */
 interface SessionHeader {
   cwd?: string;
@@ -82,6 +125,15 @@ export class AgentRegistry {
    * `remove`, so a disposed conversation cannot leave a stale "running" behind.
    */
   private readonly openTurn = new Set<string>();
+  /**
+   * Conversations DSH lists but this process holds no Agent for (see `ListedSession`).
+   *
+   * Kept beside the live map rather than in it, so nothing that asks "who is the owner" or "can we
+   * deliver to this id" can pick one by accident: a listed row is a name to show the pet, not a
+   * mouth to speak into. `add()` clears the entry, so a row that later gets an Agent keeps exactly
+   * one identity in `listSessions()`.
+   */
+  private readonly listed = new Map<string, ListedSession>();
   private ownerId: string | null = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   private pinned: boolean = false;
@@ -129,6 +181,8 @@ export class AgentRegistry {
    */
   add(id: string, agent: LiveAgent): void {
     this.live.set(id, agent);
+    // A row that just gained an Agent stops being a listed name: one conversation, one identity.
+    this.listed.delete(id);
     if (this.isSubagent(agent)) return;
     if (!this.pinned && !this.archived(id)) this.ownerId = id;
   }
@@ -176,6 +230,57 @@ export class AgentRegistry {
   /** The agent currently tracked by id, or undefined when never seen or already disposed. */
   liveGet(id: string): LiveAgent | undefined {
     return this.live.get(id);
+  }
+
+  /**
+   * Replace the set of conversations DSH lists without this process holding an Agent for them.
+   *
+   * The whole set is replaced, never merged: a conversation that DSH stopped listing (archived,
+   * deleted, or never really there) must disappear from the pet's menu in the same call, or the pet
+   * keeps offering a name nobody can open. Rows that do have a live Agent are dropped here, so
+   * `listSessions()` can concatenate the two sources without duplicates.
+   */
+  noteListed(rows: Iterable<{ id: string; cwd?: string; title?: string; running?: boolean }>): number {
+    this.listed.clear();
+    let kept = 0;
+    for (const row of rows) {
+      const id = String(row.id ?? '');
+      if (!id || this.live.has(id) || this.archived(id)) continue;
+      this.listed.set(id, {
+        cwd: String(row.cwd ?? ''),
+        title: String(row.title ?? ''),
+        running: row.running === true,
+      });
+      kept++;
+    }
+    return kept;
+  }
+
+  /** How many listed-but-not-live conversations the registry is holding — for the bridge log. */
+  get listedSize(): number {
+    return this.listed.size;
+  }
+
+  /**
+   * Add or refresh one listed conversation, from a Host event that names it.
+   *
+   * DSH announces a conversation becoming visible (`api-session/added`) with its whole summary, so
+   * this keeps the pet's menu current without re-reading the entire list. A row that has a live
+   * Agent here, or is archived, is ignored — it is not a listed row by definition.
+   */
+  noteListedOne(id: string, row: { cwd?: string; title?: string; running?: boolean }): boolean {
+    if (!id || this.live.has(id) || this.archived(id)) return false;
+    this.listed.set(id, {
+      cwd: String(row.cwd ?? ''),
+      title: String(row.title ?? ''),
+      running: row.running === true,
+    });
+    return true;
+  }
+
+  /** Forget a listed conversation DSH says is gone. Answers whether it was being held. */
+  forgetListed(id: string): boolean {
+    return this.listed.delete(id);
   }
 
   /**
@@ -301,8 +406,8 @@ export class AgentRegistry {
    * Archived sessions are excluded: one stays live but refuses every model step, so words
    * submitted there end as `blocked` instead of being answered.
    */
-  listSessions(): Array<{ id: string; cwd: string; model: string; title: string; running: boolean; owner: boolean; pinned: boolean; subagent: boolean }> {
-    const out: Array<{ id: string; cwd: string; model: string; title: string; running: boolean; owner: boolean; pinned: boolean; subagent: boolean }> = [];
+  listSessions(): SessionRow[] {
+    const out: SessionRow[] = [];
     for (const [id, agent] of this.live) {
       if (this.archived(id)) continue;
       const sub = this.isSubagent(agent);
@@ -317,6 +422,23 @@ export class AgentRegistry {
         owner: id === this.ownerId && !sub,
         pinned: this.pinned && id === this.ownerId,
         subagent: sub,
+      });
+    }
+    // Then the conversations DSH lists but this process holds no Agent for. They come last so the
+    // live ones stay in the order the pet has been reading them, and they never claim the owner:
+    // a row nobody can deliver into must not look like the default target.
+    for (const [id, row] of this.listed) {
+      if (this.live.has(id) || this.archived(id)) continue;
+      out.push({
+        id,
+        cwd: row.cwd,
+        model: this.modelOf(id),
+        title: row.title,
+        running: row.running,
+        owner: false,
+        pinned: false,
+        subagent: false,
+        cold: true,
       });
     }
     return out;

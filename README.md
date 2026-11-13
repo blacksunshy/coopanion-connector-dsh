@@ -111,6 +111,7 @@ pnpm run build          # 产出 dist/index.cjs
 | **自动跟随只认人的动作**：`assistant/message`、`turn/start`、`turn/end`、`tool/call` 不再抢走归属，只有 `user/message` 与 `approval/decided` 会 | **≥ 0.2.21** | **≥ 0.6.23**（桌宠侧同时把「你就指着这里」与「默认送到这里」拆成两个标记） |
 | **会话清单带标题**：`SessionSummary.title` 可选项，`listSessions()` 折 `session/title` 事件并缓存；`session/title` 到达时 push `session-list` | **≥ 0.2.22** | **≥ 0.6.24**（旧桌宠忽略该字段照常工作；没有它桌宠只能凭 id 与目录猜） |
 | **会话清单带运行状态**：`SessionSummary.running` 可选项，取 `agent.status`，读不到时退回本插件跟的 `turn/start`／`turn/end`；轮次起止时 push `session-list` | **≥ 0.2.23** | **≥ 0.6.25**（旧桌宠忽略该字段；没有它桌宠分不出「还在跑」与「没回答」） |
+| **看到全部会话**：会话清单改为读 `sessionController.list()`（DSH 侧栏用的同一份枚举，含标题与运行态），不再只靠 `agent/created` 攒到的几个；DSH 报存在但本进程没 Agent 的会话以 `SessionSummary.cold: true` 出现，指名往里说话时按需 `resolveAgent` 激活；未绑定的桌宠也能收到 `session-list`；订阅 `api-session/added`／`removed` 增量更新 | **≥ 0.2.24** | **≥ 0.6.26**（旧桌宠忽略 `cold` 字段照常工作；但没有这一项时桌宠只能看见恰好被 resume 过的那两三个会话，选错目标的根因仍在） |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 

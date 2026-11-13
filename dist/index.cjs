@@ -3906,9 +3906,15 @@ var PetHub = class {
   upgrade = (req, socket, head) => {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
   };
-  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session. */
+  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session.
+   *
+   *  `session-list` is let through while unbound: it is the menu, not a notification about a
+   *  conversation, and a pet that is still waiting for a `ready` is exactly the reader that needs
+   *  to know what could be opened. Dropping it there left a pet on a Host with open conversations
+   *  unable to see any of them until one happened to be resumed. */
   send(frame) {
-    if (!this.connected || !this.bound) return false;
+    if (!this.connected) return false;
+    if (!this.bound && frame.t !== "session-list") return false;
     this.connection.send(JSON.stringify(frame));
     return true;
   }
@@ -4097,6 +4103,15 @@ var AgentRegistry = class {
    * `remove`, so a disposed conversation cannot leave a stale "running" behind.
    */
   openTurn = /* @__PURE__ */ new Set();
+  /**
+   * Conversations DSH lists but this process holds no Agent for (see `ListedSession`).
+   *
+   * Kept beside the live map rather than in it, so nothing that asks "who is the owner" or "can we
+   * deliver to this id" can pick one by accident: a listed row is a name to show the pet, not a
+   * mouth to speak into. `add()` clears the entry, so a row that later gets an Agent keeps exactly
+   * one identity in `listSessions()`.
+   */
+  listed = /* @__PURE__ */ new Map();
   ownerId = null;
   /** True after the pet's explicit `pick` — auto-follow and new-session creation stop stealing. */
   pinned = false;
@@ -4141,6 +4156,7 @@ var AgentRegistry = class {
    */
   add(id, agent) {
     this.live.set(id, agent);
+    this.listed.delete(id);
     if (this.isSubagent(agent)) return;
     if (!this.pinned && !this.archived(id)) this.ownerId = id;
   }
@@ -4179,6 +4195,53 @@ var AgentRegistry = class {
   /** The agent currently tracked by id, or undefined when never seen or already disposed. */
   liveGet(id) {
     return this.live.get(id);
+  }
+  /**
+   * Replace the set of conversations DSH lists without this process holding an Agent for them.
+   *
+   * The whole set is replaced, never merged: a conversation that DSH stopped listing (archived,
+   * deleted, or never really there) must disappear from the pet's menu in the same call, or the pet
+   * keeps offering a name nobody can open. Rows that do have a live Agent are dropped here, so
+   * `listSessions()` can concatenate the two sources without duplicates.
+   */
+  noteListed(rows) {
+    this.listed.clear();
+    let kept = 0;
+    for (const row of rows) {
+      const id = String(row.id ?? "");
+      if (!id || this.live.has(id) || this.archived(id)) continue;
+      this.listed.set(id, {
+        cwd: String(row.cwd ?? ""),
+        title: String(row.title ?? ""),
+        running: row.running === true
+      });
+      kept++;
+    }
+    return kept;
+  }
+  /** How many listed-but-not-live conversations the registry is holding — for the bridge log. */
+  get listedSize() {
+    return this.listed.size;
+  }
+  /**
+   * Add or refresh one listed conversation, from a Host event that names it.
+   *
+   * DSH announces a conversation becoming visible (`api-session/added`) with its whole summary, so
+   * this keeps the pet's menu current without re-reading the entire list. A row that has a live
+   * Agent here, or is archived, is ignored — it is not a listed row by definition.
+   */
+  noteListedOne(id, row) {
+    if (!id || this.live.has(id) || this.archived(id)) return false;
+    this.listed.set(id, {
+      cwd: String(row.cwd ?? ""),
+      title: String(row.title ?? ""),
+      running: row.running === true
+    });
+    return true;
+  }
+  /** Forget a listed conversation DSH says is gone. Answers whether it was being held. */
+  forgetListed(id) {
+    return this.listed.delete(id);
   }
   /**
    * Lets the pet point its words at a specific live session, instead of always following the
@@ -4310,6 +4373,20 @@ var AgentRegistry = class {
         owner: id === this.ownerId && !sub,
         pinned: this.pinned && id === this.ownerId,
         subagent: sub
+      });
+    }
+    for (const [id, row] of this.listed) {
+      if (this.live.has(id) || this.archived(id)) continue;
+      out.push({
+        id,
+        cwd: row.cwd,
+        model: this.modelOf(id),
+        title: row.title,
+        running: row.running,
+        owner: false,
+        pinned: false,
+        subagent: false,
+        cold: true
       });
     }
     return out;
@@ -4492,7 +4569,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.23") return "0.2.23";
+  if ("0.2.24") return "0.2.24";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4736,11 +4813,31 @@ function buildUserMessage(text, template, factoryOverride = factory ?? null) {
   }
   return { id: (0, import_node_crypto.randomUUID)(), role: "user", content: [{ type: "text", text }], source: { kind: "user" } };
 }
+async function listSessionsFromHost(controller) {
+  const list = controller?.list;
+  if (typeof list !== "function") return [];
+  try {
+    const answer = await list.call(controller, {});
+    const items = answer?.items;
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+function titleOfRow(row) {
+  const title = row.projections?.values?.title;
+  return typeof title === "string" ? title : "";
+}
 async function rescanExistingSessions(scoped, agents, log) {
   try {
     const controller = scoped.get("sessionController");
     const registry = scoped.get("workspaceRegistry");
     const ids = /* @__PURE__ */ new Set();
+    const rows = await listSessionsFromHost(controller);
+    for (const row of rows) {
+      const id = String(row.sessionId ?? "");
+      if (id) ids.add(id);
+    }
     try {
       for (const workspace of registry?.list?.() ?? []) {
         for (const id of workspace.sessionIds ?? []) if (id) ids.add(id);
@@ -4783,7 +4880,7 @@ async function rescanExistingSessions(scoped, agents, log) {
       }
       register(id, agent);
     }
-    for (const coll of ["agents", "sessions", "list", "listSessions"]) {
+    for (const coll of ["agents", "sessions", "live"]) {
       const c = controller?.[coll];
       const items = c instanceof Map ? [...c.values()] : Array.isArray(c) ? c : [];
       for (const item of items) {
@@ -4791,6 +4888,12 @@ async function rescanExistingSessions(scoped, agents, log) {
         if (sid) register(sid, item);
       }
     }
+    const available = /* @__PURE__ */ new Set();
+    for (const row of rows) {
+      const id = String(row.sessionId ?? "");
+      if (id && row.agentAvailable !== false) available.add(id);
+    }
+    const listUnavailable = rows.length === 0;
     let fromAsync = 0;
     let holder;
     try {
@@ -4800,7 +4903,7 @@ async function rescanExistingSessions(scoped, agents, log) {
     }
     if (holder && !(holder instanceof Map) && !Array.isArray(holder)) {
       for (const id of ids) {
-        if (registered.has(id)) continue;
+        if (registered.has(id) || !listUnavailable && !available.has(id)) continue;
         for (const name of ["resolveAgent", "get", "getAgent"]) {
           const fn = holder[name];
           if (typeof fn !== "function") continue;
@@ -4816,9 +4919,45 @@ async function rescanExistingSessions(scoped, agents, log) {
         }
       }
     }
-    log("rescan-existing", { sessionIds: ids.size, registered: registered.size, fromAsync });
+    const cold = rows.filter((row) => {
+      const id = String(row.sessionId ?? "");
+      if (!id || registered.has(id)) return false;
+      if (String(row.parentSessionId ?? "") !== "") return false;
+      return row.origin !== "subagent";
+    }).map((row) => ({
+      id: String(row.sessionId),
+      cwd: typeof row.cwd === "string" ? row.cwd : "",
+      title: titleOfRow(row),
+      running: row.running === true
+    }));
+    const listed = agents.noteListed(cold);
+    log("rescan-existing", { sessionIds: ids.size, registered: registered.size, fromAsync, listed });
   } catch (err) {
     log("rescan-existing-failed", { error: err.message });
+  }
+}
+async function attachSession(scoped, agents, sessionId, log) {
+  const controller = scoped.get("sessionController");
+  const holder = controller?.agents;
+  const resolve2 = holder?.resolveAgent;
+  if (typeof resolve2 !== "function") {
+    log("attach-session-unsupported", { sessionId });
+    return null;
+  }
+  try {
+    const found = await resolve2.call(holder, sessionId);
+    const candidate = found?.agent ?? found;
+    const a = candidate;
+    if (!a || typeof a.followup !== "function" || String(a.session?.id ?? "") !== sessionId) {
+      log("attach-session-refused", { sessionId, shape: found === void 0 ? "undefined" : typeof found });
+      return null;
+    }
+    agents.add(sessionId, a);
+    log("attach-session", { sessionId });
+    return a;
+  } catch (err) {
+    log("attach-session-failed", { sessionId, error: err.message });
+    return null;
   }
 }
 var plugin_default = {
@@ -4888,6 +5027,7 @@ var plugin_default = {
             rescanning = rescanExistingSessions(scoped, agents, logLine).then(() => {
               const facts = agents.facts();
               if (facts && hub?.connected) hub.notifyBound(facts);
+              pushSessions();
             }).finally(() => {
               rescanning = null;
             });
@@ -4919,11 +5059,11 @@ var plugin_default = {
                 return { reason: "auto-forward disabled \u2014 open the forward toggle at /coopanion/forward (POST {on:true}) or flip it in the pet panel", code: "forwarding-off" };
               }
               const sessions = agents.listSessions();
-              const live = new Set(sessions.filter((session) => !session.subagent).map((session) => session.id));
+              const known = new Set(sessions.filter((session) => !session.subagent).map((session) => session.id));
               const ownerSession = agents.ownerSession;
               if (target !== void 0) {
-                if (!live.has(target)) {
-                  debug("say-refused-stale-target", { target, ownerSession, liveCount: live.size });
+                if (!known.has(target)) {
+                  debug("say-refused-stale-target", { target, ownerSession, liveCount: known.size });
                   return {
                     reason: `conversation ${target} is no longer open (it was archived, disposed, or was a subagent); pick one of the open conversations before speaking`,
                     code: "stale-session",
@@ -4932,11 +5072,25 @@ var plugin_default = {
                     pinned: agents.isPinned
                   };
                 }
-                if (target !== ownerSession && !agents.forceOwner(target)) {
+                if (agents.liveGet(target) === void 0) {
+                  const attached = await attachSession(scoped, agents, target, logLine);
+                  if (!attached) {
+                    debug("say-attach-failed", { target, ownerSession });
+                    return {
+                      reason: `conversation ${target} is listed by DSH but could not be opened to speak into; pick another one`,
+                      code: "cannot-deliver",
+                      session: ownerSession,
+                      sessions,
+                      pinned: agents.isPinned
+                    };
+                  }
+                }
+                const nowOwner = agents.ownerSession;
+                if (target !== nowOwner && !agents.forceOwner(target)) {
                   return {
                     reason: `conversation ${target} could not be made the owner; pick it again`,
                     code: "stale-session",
-                    session: ownerSession,
+                    session: nowOwner,
                     sessions,
                     pinned: agents.isPinned
                   };
@@ -5279,6 +5433,23 @@ var plugin_default = {
     root.effect(() => () => {
       pending.length = 0;
     });
+    root.on("api-session/added", ((summary) => {
+      const id = String(summary?.sessionId ?? "");
+      if (!id) return;
+      if (String(summary.parentSessionId ?? "") !== "" || summary.origin === "subagent") return;
+      if (summary.agentAvailable === true) return;
+      const title = summary.projections?.values?.title;
+      if (agents.noteListedOne(id, {
+        cwd: typeof summary.cwd === "string" ? summary.cwd : "",
+        title: typeof title === "string" ? title : "",
+        running: summary.running === true
+      })) {
+        pushSessions();
+      }
+    }));
+    root.on("api-session/removed", ((sessionId) => {
+      if (agents.forgetListed(String(sessionId ?? ""))) pushSessions();
+    }));
     root.on("agent/created", ((payload) => {
       const agent = payload?.agent;
       const id = agent?.session?.id;

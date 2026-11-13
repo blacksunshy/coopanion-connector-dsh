@@ -45,6 +45,17 @@ export interface SessionSummary {
    * Absent means the Host does not report it (anything older than 0.2.23) — *not* idle.
    */
   running?: boolean;
+  /**
+   * True when DSH knows this conversation but this Host process holds no Agent for it yet.
+   *
+   * These are the conversations the sidebar shows for a project you have not opened since DSH
+   * started: real, named, and openable — DSH attaches an Agent the moment one is spoken into. A pet
+   * that never sees them can only aim at whatever happens to be resumed, which is how a line lands
+   * in a conversation the person was not looking at.
+   *
+   * Absent means the Host does not report it (anything older than 0.2.24) — *not* "live".
+   */
+  cold?: boolean;
   owner: boolean;
   pinned: boolean;
   subagent: boolean;

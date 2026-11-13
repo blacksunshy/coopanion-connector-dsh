@@ -93,9 +93,15 @@ export class PetHub {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.accept(ws));
   };
 
-  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session. */
+  /** A notice to the pet; false when nobody is listening or the pet has not yet bound to a session.
+   *
+   *  `session-list` is let through while unbound: it is the menu, not a notification about a
+   *  conversation, and a pet that is still waiting for a `ready` is exactly the reader that needs
+   *  to know what could be opened. Dropping it there left a pet on a Host with open conversations
+   *  unable to see any of them until one happened to be resumed. */
   send(frame: HostFrame): boolean {
-    if (!this.connected || !this.bound) return false;
+    if (!this.connected) return false;
+    if (!this.bound && frame.t !== 'session-list') return false;
     this.connection!.send(JSON.stringify(frame));
     return true;
   }
