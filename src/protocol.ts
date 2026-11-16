@@ -11,10 +11,142 @@
  * copy of the same literals because the two packages ship separately.
  */
 
+/**
+ * One live conversation as the pet sees it — in `session-list`, and in the snapshot a refusal
+ * carries so the pet can correct itself without a second round trip.
+ *
+ * `owner` marks the conversation a `say` without an explicit target would land in right now;
+ * `pinned` marks the one an explicit `pick` is holding. Archived sessions never appear here:
+ * they stay live but refuse every model step, so words sent to one end as `blocked`.
+ */
+export interface SessionSummary {
+  id: string;
+  cwd: string;
+  model: string;
+  /**
+   * The conversation's title, as the person sees it in DSH's sidebar.
+   *
+   * A pet that can only read an id and a directory cannot tell "the bug-fix conversation" from
+   * "the one about the other repo", so it guesses — and a guess is how a line lands in the wrong
+   * window. The title is what the person themselves uses to recognise a conversation.
+   *
+   * Empty for a conversation nobody has spoken in yet (DSH titles a log from its first user
+   * message), so a reader must treat '' as "untitled", not as "no title support".
+   */
+  title?: string;
+  /**
+   * Whether this conversation is working right now — a turn is open and the model is still going.
+   *
+   * A pet that cannot see this reads "no answer yet" as "the person is ignoring me" and sends the
+   * same thing again, or speaks into a busy conversation believing it is idle. DSH exposes it as
+   * `agent.status` (`'idle' | 'running'`); when that is unavailable the bridge falls back to the
+   * turn boundaries it saw, so a reader gets a plain boolean either way.
+   *
+   * Absent means the Host does not report it (anything older than 0.2.23) — *not* idle.
+   */
+  running?: boolean;
+  /**
+   * True when DSH knows this conversation but this Host process holds no Agent for it yet.
+   *
+   * These are the conversations the sidebar shows for a project you have not opened since DSH
+   * started: real, named, and openable — DSH attaches an Agent the moment one is spoken into. A pet
+   * that never sees them can only aim at whatever happens to be resumed, which is how a line lands
+   * in a conversation the person was not looking at.
+   *
+   * Absent means the Host does not report it (anything older than 0.2.24) — *not* "live".
+   */
+  cold?: boolean;
+  owner: boolean;
+  pinned: boolean;
+  subagent: boolean;
+}
+
+/**
+ * Why the Host would not take a `say`, in a form a pet can branch on.
+ *
+ * `reason` stays the human sentence it always was; `code` is the machine answer, so a pet can
+ * retry (`stale-session` → re-list and pick), create a conversation (`no-session`) or stop
+ * (`forwarding-off`) without parsing English.
+ */
+export type RefusalCode =
+  /** The text was blank once trimmed. */
+  | 'empty'
+  /** The line already carries this Host's `… （通过桌宠）说：` prefix; submitting it would nest another. */
+  | 'nested-prefix'
+  /** Auto-forward is switched off; the person turned it off deliberately. */
+  | 'forwarding-off'
+  /** No conversation is open, so the pet must create one before it can speak. */
+  | 'no-session'
+  /** The named conversation is gone, archived, or a subagent; re-list and pick again. */
+  | 'stale-session'
+  /** The owning agent cannot accept a message on this DSH build. */
+  | 'cannot-deliver'
+  /** DSH itself threw while queuing the message. */
+  | 'host-error';
+
+/** A refusal a `say` may produce: the human sentence, plus what a pet needs to recover. */
+export interface SayRefusal {
+  reason: string;
+  code?: RefusalCode;
+  /** The conversation the words would have landed in, when the Host knew one. */
+  session?: string | null;
+  /** Every live conversation at the moment of the refusal, so a pet can re-pick in one click. */
+  sessions?: SessionSummary[];
+  pinned?: boolean;
+}
+
+/** What a `say` settled to: delivered, refused, or — from an older Host — a bare reason string. */
+export type SayOutcome = string | SayRefusal | null;
+
+/**
+ * How a pet decides where its next line goes. This is the contract the fields above exist for;
+ * every step is answerable from frames the Host already sends.
+ *
+ * DSH has no "focused conversation" signal. A person switching tabs emits no `session/event`, so
+ * neither side can observe a silent switch: the owner an idle Host holds is a guess that can be
+ * hours stale. A pet that simply speaks into its local aim will therefore, sooner or later, drop a
+ * line into whichever conversation DSH happened to touch last. The fix is to make the target
+ * explicit and check it at the moment of speaking, not at the moment of aiming.
+ *
+ * Before each `say`:
+ *   1. Use the list already in hand — the `sessions` on the last `ready`, on the last pushed
+ *      `session-list`, or on the last ack. The Host pushes one on every open and every dispose, so
+ *      it is current unless a push was missed while disconnected.
+ *   2. If the conversation you mean is in that list, send `session: <its id>`. The Host re-checks it
+ *      against the live list and refuses rather than re-routing, so a wrong aim is visible, not
+ *      silent.
+ *   3. If the list is empty, or the conversation you mean is gone, do not send a bare `say`
+ *      expecting a fallback: send `new` and let `created` tell you where to speak. This is the
+ *      "should I start a conversation?" decision — the answer is yes exactly when the list has no
+ *      entry you can point at.
+ *   4. If you are unsure, send `list-sessions` first; it is one round trip, and its `owner` is the
+ *      conversation a targetless `say` would currently land in.
+ *
+ * After the ack:
+ *   - `accepted` repeats the conversation that took the words. Show that to the person, so a
+ *     misroute is caught by the reader who knows where the line belongs.
+ *   - `refused` with `stale-session` → re-pick from the `sessions` it carries (don't re-send blind).
+ *   - `refused` with `no-session` → `new`.
+ *   - `refused` with `forwarding-off` → stop; the person turned forwarding off on purpose.
+ *   - no ack at all → the Host is gone; do not retry into a fresh connection without re-listing.
+ */
+
 /** Host→pet frames. `v` is the protocol revision, so a pet from another release can refuse. */
 export type HostFrame =
-  /** Sent once per connection, before any other frame. */
-  | { t: 'ready'; v: number; session: string; cwd: string; model: string }
+  /**
+   * Sent once per connection, before any other frame — and again whenever the owning conversation
+   * changes. `session` is where words land *now*; `sessions` is every open conversation, so a pet
+   * can show the person where it is speaking and let them correct it without asking first.
+   */
+  | {
+      t: 'ready';
+      v: number;
+      session: string;
+      cwd: string;
+      model: string;
+      sessions?: SessionSummary[];
+      pinned?: boolean;
+    }
   /** A turn began: the pet switches to its working face. */
   | { t: 'turn-start'; turn: number }
   /** A turn ended. `reason` is DSH's own wording for why. `used`/`size` are the routed model's
@@ -50,8 +182,13 @@ export type HostFrame =
   /** Answer to `list-sessions`: every live session with its owner/pin state. */
   | {
       t: 'session-list';
-      sessions: Array<{ id: string; cwd: string; model: string; owner: boolean; pinned: boolean; subagent: boolean }>;
+      sessions: SessionSummary[];
       pinned: boolean;
+      /**
+       * The conversation a `say` without an explicit target would land in, or null when none is
+       * open. Repeated at top level because it is the one field a pet checks before every line.
+       */
+      owner?: string | null;
     }
   /** Answer to `unpin`: the pin is gone, auto-follow may move the owner again. */
   | { t: 'unpinned' }
@@ -65,8 +202,18 @@ export type HostFrame =
 export type PetFrame =
   /** Must arrive first; a connection that sends anything else is closed. */
   | { t: 'hello'; v: number; name: string }
-  /** A person's words, submitted to the owning agent. `id` is echoed in `accepted`/`refused`. */
-  | { t: 'say'; id: string; text: string; from: string }
+  /**
+   * A person's words, submitted to the owning agent. `id` is echoed in `accepted`/`refused`.
+   *
+   * `session` names the conversation they belong to. A pet that omits it keeps the old behaviour
+   * (the Host's current owner, whatever that is); a pet that sends it gets an explicit target,
+   * which is the only way to be sure when several conversations are open — DSH emits no event on
+   * a silent tab switch, so the owner the Host guessed can be stale by the time words arrive.
+   * The Host re-checks the named session against its live list on every `say` and refuses a stale
+   * one with `code: 'stale-session'` plus the current list, instead of quietly delivering into
+   * the wrong conversation.
+   */
+  | { t: 'say'; id: string; text: string; from: string; session?: string }
   /**
    * Switch the conversation the pet speaks into. The newest live session is the default; a person
    * may point the pet at another open session (for example after archiving the current one). The
@@ -91,8 +238,28 @@ export type PetFrame =
   | { t: 'unpin' }
   | { t: 'ping' };
 
-/** Host→pet answers to a `say`. */
-export type HostAck = { t: 'accepted'; id: string } | { t: 'refused'; id: string; reason: string };
+/**
+ * Host→pet answers to a `say`.
+ *
+ * `accepted` echoes which conversation the words actually went into (`session`) and how many were
+ * open when they did (`sessions`), so a pet can tell a person exactly where its line landed instead
+ * of assuming. `refused` carries the same snapshot plus a `code`, so the pet can recover: re-list
+ * and pick for `stale-session`, create a conversation for `no-session`.
+ *
+ * Older Hosts send the same two tags with only `id` (and `reason`), which is why every added field
+ * is optional.
+ */
+export type HostAck =
+  | { t: 'accepted'; id: string; session?: string; sessions?: SessionSummary[]; pinned?: boolean }
+  | {
+      t: 'refused';
+      id: string;
+      reason: string;
+      code?: RefusalCode;
+      session?: string | null;
+      sessions?: SessionSummary[];
+      pinned?: boolean;
+    };
 
 /** One of the frames this plugin understands; anything else is ignored. */
 export function parsePetFrame(raw: string): PetFrame | null {
@@ -111,7 +278,12 @@ export function parsePetFrame(raw: string): PetFrame | null {
     case 'say': {
       if (typeof frame.id !== 'string' || typeof frame.text !== 'string') return null;
       const from = typeof frame.from === 'string' && frame.from.trim() ? frame.from : 'the pet';
-      return { t: 'say', id: frame.id.slice(0, 64), text: frame.text, from: from.slice(0, 64) };
+      // A pet from before this field keeps working: no target means "the Host's owner", exactly
+      // the old contract. A pet that sends one is taken at its word and checked by the caller.
+      const session = typeof frame.session === 'string' && frame.session.trim()
+        ? frame.session.trim().slice(0, 128)
+        : undefined;
+      return { t: 'say', id: frame.id.slice(0, 64), text: frame.text, from: from.slice(0, 64), session };
     }
     case 'ping':
       return { t: 'ping' };
