@@ -60,6 +60,11 @@ export interface PetHubOptions {
   createSession?(workspace?: string): Promise<{ session: string; workspace?: string } | { reason: string }>;
   /** The pet asked which workspaces a `new` may target; omit when the Host cannot answer. */
   listWorkspaces?(): Array<{ id: string; path: string; sessions: number; owner: boolean }>;
+  /**
+   * The pet answered a `request` this Host sent. Return false for an id nobody is waiting on, so
+   * the caller can treat a late or duplicated `answer` as noise instead of resolving a stale prompt.
+   */
+  answer?(id: string, decision?: 'allowed-once' | 'rejected' | 'cancelled', answers?: Array<{ id: string; selected: string[]; custom?: string }>): boolean;
   log(level: 'info' | 'warn', text: string): void;
   /** The upgrade handler of another server, when the caller owns one (tests, embedding). */
   server?: WebSocketServer;
@@ -72,6 +77,8 @@ export class PetHub {
   /** True after this.connection has received its first `ready` frame. A pet in waiting state may
    *  have an open connection but has not yet been told which session to speak into. */
   private bound: boolean = false;
+  /** What the current connection said it can do in `hello`. Reset with every new connection. */
+  private caps: ReadonlySet<string> = new Set();
   private readonly timer: NodeJS.Timeout;
 
   constructor(private readonly opts: PetHubOptions) {
@@ -88,6 +95,11 @@ export class PetHub {
   /** Whether an open connection has been bound to a DSH conversation (has received `ready`). */
   get boundState(): boolean {
     return this.bound && this.connected;
+  }
+
+  /** What the connected pet declared in `hello`; empty when nothing is connected. */
+  get capabilities(): ReadonlySet<string> {
+    return this.connected ? this.caps : new Set();
   }
 
   /** The upgrade route `webServer.registerUpgrade` takes.
@@ -153,6 +165,7 @@ export class PetHub {
     this.connection?.close(4000, 'replaced');
     this.connection = ws;
     this.bound = false;
+    this.caps = new Set();
     let greeted = false;
     ws.on('message', (data, isBinary) => {
       if (isBinary) return;
@@ -170,6 +183,8 @@ export class PetHub {
             return;
           }
           greeted = true;
+          this.caps = new Set(frame.caps ?? []);
+          if (this.caps.size > 0) this.opts.log('info', `pet capabilities: ${Array.from(this.caps).join(', ')}`);
           const welcome = this.opts.welcome();
           if (welcome) {
             this.bound = true;
@@ -270,6 +285,11 @@ export class PetHub {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reason === null ? { t: 'unpinned' } : { t: 'refused', reason }));
           }
+          return;
+        }
+        case 'answer': {
+          const answered = this.opts.answer?.(frame.id, frame.decision, frame.answers) === true;
+          if (!answered) this.opts.log('warn', `pet answered a request this Host is no longer waiting on: ${frame.id}`);
           return;
         }
       }

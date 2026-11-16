@@ -23,6 +23,28 @@ describe('a frame from the pet', () => {
     expect(parsePetFrame(JSON.stringify({ t: 'new', id: 'n3', workspace: '   ' }))).toEqual({ t: 'new', id: 'n3' });
   });
 
+  it('carries the capabilities a pet declares, without duplicates or junk', () => {
+    expect(parsePetFrame(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo', caps: ['answers', 'answers', 7, ''] })))
+      .toEqual({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo', caps: ['answers'] });
+    expect(parsePetFrame(JSON.stringify({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo' })))
+      .toEqual({ t: 'hello', v: PROTOCOL_VERSION, name: 'coo' });
+  });
+
+  it('answers a prompt with a decision or with chosen labels', () => {
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', id: 'r1', decision: 'allowed-once' })))
+      .toEqual({ t: 'answer', id: 'r1', decision: 'allowed-once' });
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', id: 'r2', answers: [{ id: 'q1', selected: ['甲'], custom: '  ' }] })))
+      .toEqual({ t: 'answer', id: 'r2', answers: [{ id: 'q1', selected: ['甲'] }] });
+  });
+
+  it('refuses an answer that decides nothing', () => {
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', id: 'r3' }))).toBeNull();
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', decision: 'allowed-once' }))).toBeNull();
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', id: 'r4', decision: 'yes-please' }))).toBeNull();
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', id: 'r5', answers: [] }))).toBeNull();
+    expect(parsePetFrame(JSON.stringify({ t: 'answer', id: 'r6', answers: [{ id: 'q1' }] }))).toBeNull();
+  });
+
   it('is refused when it is malformed or from another protocol', () => {
     expect(parsePetFrame('{')).toBeNull();
     expect(parsePetFrame('[]')).toBeNull();

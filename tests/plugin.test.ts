@@ -162,6 +162,73 @@ describe('the plugin as DSH loads it', () => {
   });
 });
 
+describe('a prompt the pet can answer (discussion #19)', () => {
+  /** The `approval/request` listener the plugin registered, as DSH would call it. */
+  type Waterfall = (request: unknown, next: () => Promise<unknown>) => Promise<unknown>;
+  const waterfall = (listeners: Map<string, Array<(...args: unknown[]) => void>>, event: string): Waterfall => {
+    const listener = listeners.get(event)?.[0] as Waterfall | undefined;
+    expect(listener).toBeTypeOf('function');
+    return listener!;
+  };
+
+  it('is offered to a pet that declared answers, and the pet\'s decision is returned', async () => {
+    const { emit, connect, listeners } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo', caps: ['answers'] });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+
+    const pending = waterfall(listeners, 'approval/request')(
+      { agent: { session: { id: 'session-1' } }, toolName: 'shell', reason: 'writes a file' },
+      async () => 'desktop-decided',
+    );
+    await until(() => frames.some((frame) => frame.t === 'request'));
+    const request = frames.find((frame) => frame.t === 'request')!;
+    expect(request).toMatchObject({ kind: 'approval', tool: 'shell', reason: 'writes a file' });
+
+    send({ t: 'answer', id: request.id, decision: 'allowed-once' });
+    expect(await pending).toBe('allowed-once');
+    await until(() => frames.some((frame) => frame.t === 'request-end' && frame.outcome === 'answered'));
+  });
+
+  it('is left to the desktop when the pet never declared answers', async () => {
+    const { emit, connect, listeners } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'old-pet' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+
+    const answer = await waterfall(listeners, 'approval/request')(
+      { agent: { session: { id: 'session-1' } }, toolName: 'shell', reason: 'writes a file' },
+      async () => 'desktop-decided',
+    );
+    expect(answer).toBe('desktop-decided');
+    expect(frames.some((frame) => frame.t === 'request')).toBe(false);
+  });
+
+  it('carries the option labels of a question, so the pet picks what the person saw', async () => {
+    const { emit, connect, listeners } = await loaded();
+    emit('agent/created', { agent: agentOf('session-1') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo', caps: ['answers'] });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+
+    const pending = waterfall(listeners, 'user-questions/request')(
+      {
+        agent: { session: { id: 'session-1' } },
+        questions: [{ id: 'q1', question: '用哪个方案？', options: [{ label: '甲' }, { label: '乙' }] }],
+      },
+      async () => ({ answers: [] }),
+    );
+    await until(() => frames.some((frame) => frame.t === 'request'));
+    const request = frames.find((frame) => frame.t === 'request')!;
+    expect(request).toMatchObject({ kind: 'question', questions: [{ id: 'q1', options: [{ label: '甲' }, { label: '乙' }] }] });
+
+    send({ t: 'answer', id: request.id, answers: [{ id: 'q1', selected: ['乙'] }] });
+    expect(await pending).toEqual({ answers: [{ id: 'q1', selected: ['乙'] }] });
+  });
+});
+
 describe('a Host whose context guards its services (issue #9)', () => {
   it('survives apply() when reading a service property without inject throws, as cordis does', () => {
     // cordis turns `ctx.webServer` into a throwing accessor until the service is injected; a plain

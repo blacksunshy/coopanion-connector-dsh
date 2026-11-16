@@ -1,5 +1,15 @@
 # 更新说明
 
+## 0.2.25 — 已发布（GitHub Release）
+
+- **桌宠可以直接替你点 DSH 的选项与批准（讨论 [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) 里 qwq-awa-qnq 的建议）**：新增 `request` / `request-end` 两个 Host → 桌宠帧，以及 `answer` 桌宠 → Host 帧。DSH 弹出批准或 `ask_user_question` 时，Host 把题面与选项发给桌宠；桌宠回一个决定，Host 就当作你已经点过——批准回 `allowed-once` / `rejected` / `cancelled`，问句回选中的选项（按 label 往返，不按顺序，避免两侧漂移）
+- **只在桌宠自己声明的会话里接管**：桌宠在 `hello` 里带 `caps: ['answers']` 才启用；只接管 `agents.ownerSession` 这一个会话，别的会话的提问照旧交还桌面。没有声明的旧桌宠完全不受影响，`approval` 通知与 `question` 通知走原路径，不会重复提醒
+- **不会把桌面回合卡死**：每个请求 5 分钟没回音就发 `request-end`（`expired`）并交还桌面；桌宠断开、宿主回合取消时同样交还。桌宠回完先发 `request-end`（`answered`）再放行，避免同一请求被答两次
+- **协议是追加的**：`PROTOCOL_VERSION` 仍为 1，旧桌宠忽略未知帧即可；`answer` 帧做白名单与长度校验（决定枚举、选项最多 8 个、单条 label ≤ 200 字符、自定义文本 ≤ 2000 字符）
+- 与桌宠侧配对：需要 `cortico-world-fatfish ≥ 0.6.26`（设置里「替人物点 DSH 的选项与批准」，默认关）
+- 本版同时发布 main 上累积的 0.2.20 ~ 0.2.24（指名会话投递、只按人的动作跟随、会话标题、运行状态、`sessionController.list()` 全量清单与冷行），`dist/index.cjs` 按当前源码与锁定的依赖重建，`verify:dist` 通过
+- 测试：`tsc --noEmit` 通过，`vitest` 全绿（新增 caps 协商、`answer` 帧解析与四类「什么都不决定」的拒绝、接管与不接管两条路径）
+
 ## 0.2.24 — 未发布
 
 - **修：桌宠只看得见两三个会话，而 DSH 侧栏里有十几个**（主人 11-13 问「为什么只能读两个会话」）。根因不是 DSH 只开了两个，而是本插件攒会话清单的方式只有一条路：等 `agent/created` 事件。DSH 只在会话真的被打开、被 resume 时才发这条事件，所以启动时已经存在的会话、以及之后一直没被碰过的会话，本进程里根本没有对应的 Agent——`listSessions()` 也就报不出来。实测现场：侧栏 16 个会话，桥只报 2 个；`rescan-existing` 从启动起一直记 `sessionIds: 0`。

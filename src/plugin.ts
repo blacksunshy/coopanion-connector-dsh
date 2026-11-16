@@ -31,7 +31,7 @@ const LOOPBACK = /^(127\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|\[::1\])(:\d+)?$/i;
 interface DshContext {
   inject(services: string[], callback: (scoped: DshContext) => void): void;
   effect(callback: () => void | (() => void)): void;
-  on(event: string, listener: (...args: never[]) => void): () => void;
+  on(event: string, listener: (...args: never[]) => void, options?: { global?: boolean; prepend?: boolean }): () => void;
   get(name: string): unknown;
   logger?: { info(text: string): void; warn(text: string): void };
   webServer?: {
@@ -597,6 +597,13 @@ export default {
     };
 
     /**
+     * Whether the connected pet can take a prompt itself: bound to a conversation and declaring
+     * `answers` in `hello`. The declaration is the person's switch — without it the pet keeps the
+     * plain `approval` / `question` notices and never sees a `request`.
+     */
+    const petTakesAnswers = (): boolean => hub !== null && hub.boundState && hub.capabilities.has('answers');
+
+    /**
      * The projects a `new` may target, with how many conversations each one has open.
      *
      * Membership is read the way DSH records it (`sessionIds`), with the directory as a fallback
@@ -654,6 +661,64 @@ export default {
           .finally(() => { rescanning = null; });
         return rescanning;
       };
+      /**
+       * Prompts the pet may answer. Keyed by the id on `request`; an `answer` with the same id
+       * resolves it, and every path that ends a prompt (answer, abort, TTL) sends `request-end`.
+       *
+       * The TTL matters: a prompt held forever would stall the turn on a pet the person may have
+       * closed, so after five minutes the Host hands it back to the desktop answerer.
+       */
+      const ASK_TTL_MS = 5 * 60 * 1000;
+      const pendingAsks = new Map<string, {
+        kind: 'approval' | 'question';
+        resolve: (value: unknown) => void;
+        timer: NodeJS.Timeout;
+      }>();
+
+      /**
+       * Offer one prompt to the pet and wait for its answer.
+       *
+       * Resolves `undefined` when the pet cannot take it — not connected, not bound, no `answers`
+       * capability, or the TTL ran out — which the caller turns into `next()` so the desktop pane
+       * still shows the prompt. A prompt is never left unresolved without telling the pet.
+       */
+      const askPet = <T>(
+        kind: 'approval' | 'question',
+        frame: Extract<HostFrame, { t: 'request' }>,
+        signal: AbortSignal | undefined,
+      ): Promise<T | undefined> => {
+        if (!hub || !hub.boundState || !hub.capabilities.has('answers')) return Promise.resolve(undefined);
+        // Capture the hub: a reconnect during the wait must not send the answer to a new pet.
+        const petHub = hub;
+        return new Promise<T | undefined>((resolve) => {
+          let done = false;
+          const finish = (value: T | undefined): void => {
+            if (done) return;
+            done = true;
+            pendingAsks.delete(frame.id);
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+            resolve(value);
+          };
+          const onAbort = (): void => {
+            hub?.send({ t: 'request-end', id: frame.id, outcome: 'cancelled' });
+            finish(undefined);
+          };
+          const timer = setTimeout(() => {
+            hub?.send({ t: 'request-end', id: frame.id, outcome: 'expired' });
+            log('info', `the pet did not answer ${kind} ${frame.id} within ${ASK_TTL_MS / 60_000} minutes; handing it back to the desktop`);
+            finish(undefined);
+          }, ASK_TTL_MS);
+          timer.unref?.();
+          pendingAsks.set(frame.id, { kind, resolve: finish as (value: unknown) => void, timer });
+          if (!petHub.send(frame)) {
+            finish(undefined);
+            return;
+          }
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      };
+
       const pet = new PetHub({
         welcome: () => {
           const facts = agents.facts();
@@ -816,9 +881,126 @@ export default {
           return outcome;
         },
         listWorkspaces: () => workspaceRows(),
+        answer: (id, decision, answers) => {
+          const entry = pendingAsks.get(id);
+          if (!entry) return false;
+          // A decision closes an approval, a non-empty batch closes a question; anything else is
+          // a pet that misread the prompt, and leaving the request open lets it try again.
+          if (entry.kind === 'approval' && decision === undefined) return false;
+          if (entry.kind === 'question' && (answers === undefined || answers.length === 0)) return false;
+          clearTimeout(entry.timer);
+          hub?.send({ t: 'request-end', id, outcome: 'answered' });
+          entry.resolve(entry.kind === 'approval' ? decision : answers);
+          return true;
+        },
         log,
       });
       hub = pet;
+
+      /** The session a DSH agent belongs to, in the shape this Host build uses. */
+      const sessionOf = (agent: unknown): string => {
+        const session = (agent as { session?: { id?: unknown } } | undefined)?.session;
+        return typeof session?.id === 'string' ? session.id : '';
+      };
+
+      /**
+       * `approval/request` is a waterfall: returning a decision claims the prompt, returning
+       * `next()` passes it to the desktop answerer. Only the pet speaking into the owning
+       * conversation may claim it — a subagent's prompt still belongs to the person.
+       *
+       * `prepend` runs ahead of the desktop answerer; `global` keeps a plugin reload from leaving
+       * a second listener behind.
+       */
+      root.on('approval/request', (async (request: unknown, next: () => Promise<unknown>) => {
+        try {
+          if (!petTakesAnswers()) return next();
+          const record = (request ?? {}) as {
+            agent?: unknown;
+            toolName?: unknown;
+            reason?: unknown;
+            displayReason?: unknown;
+            signal?: AbortSignal;
+          };
+          const session = sessionOf(record.agent);
+          if (!session || session !== agents.ownerSession) return next();
+          const tool = typeof record.toolName === 'string' && record.toolName ? record.toolName : 'tool';
+          const reason = typeof record.reason === 'string' && record.reason
+            ? record.reason
+            : typeof record.displayReason === 'string' ? record.displayReason : '';
+          const decision = await askPet<'allowed-once' | 'rejected' | 'cancelled'>('approval', {
+            t: 'request',
+            id: randomUUID(),
+            kind: 'approval',
+            tool: tool.slice(0, 200),
+            reason: reason.slice(0, 2000),
+          }, record.signal);
+          if (decision === undefined) return next();
+          log('info', `the pet answered approval for ${tool} on ${session}: ${decision}`);
+          return decision;
+        } catch (err) {
+          log('warn', `could not offer an approval to the pet: ${(err as Error).message}`);
+          return next();
+        }
+      }) as never, { global: true, prepend: true } as never);
+
+      /**
+       * `user-questions/request` is the same waterfall for `ask_user_question` cards. The labels
+       * travel with the request so the pet answers with the option the person actually saw, not
+       * with an index that could drift between the two sides.
+       */
+      root.on('user-questions/request', (async (request: unknown, next: () => Promise<unknown>) => {
+        try {
+          if (!petTakesAnswers()) return next();
+          const record = (request ?? {}) as { agent?: unknown; questions?: unknown; signal?: AbortSignal };
+          const session = sessionOf(record.agent);
+          if (!session || session !== agents.ownerSession) return next();
+          const questions = Array.isArray(record.questions) ? record.questions : [];
+          const offered = questions.slice(0, 8).flatMap((raw) => {
+            const row = (raw ?? {}) as {
+              id?: unknown;
+              question?: unknown;
+              detail?: unknown;
+              header?: unknown;
+              options?: unknown;
+              multiSelect?: unknown;
+            };
+            if (typeof row.id !== 'string' || row.id === '') return [];
+            const options = Array.isArray(row.options)
+              ? row.options.slice(0, 12).flatMap((choice) => {
+                  const option = (choice ?? {}) as { label?: unknown; description?: unknown };
+                  if (typeof option.label !== 'string' || option.label === '') return [];
+                  return [{
+                    label: option.label.slice(0, 200),
+                    ...(typeof option.description === 'string' && option.description
+                      ? { description: option.description.slice(0, 300) }
+                      : {}),
+                  }];
+                })
+              : undefined;
+            return [{
+              id: row.id.slice(0, 64),
+              question: typeof row.question === 'string' ? row.question.slice(0, 500) : '',
+              ...(typeof row.detail === 'string' && row.detail ? { detail: row.detail.slice(0, 1000) } : {}),
+              ...(typeof row.header === 'string' && row.header ? { header: row.header.slice(0, 100) } : {}),
+              ...(options && options.length > 0 ? { options } : {}),
+              ...(typeof row.multiSelect === 'boolean' ? { multiSelect: row.multiSelect } : {}),
+            }];
+          });
+          if (offered.length === 0) return next();
+          const answers = await askPet<Array<{ id: string; selected: string[]; custom?: string }>>('question', {
+            t: 'request',
+            id: randomUUID(),
+            kind: 'question',
+            questions: offered,
+          }, record.signal);
+          if (answers === undefined || answers.length === 0) return next();
+          log('info', `the pet answered ${answers.length} question(s) on ${session}`);
+          return { answers };
+        } catch (err) {
+          log('warn', `could not offer a question to the pet: ${(err as Error).message}`);
+          return next();
+        }
+      }) as never, { global: true, prepend: true } as never);
 
       /** 最近一次后台检查更新的结果；用于 /coopanion/status 和 WebSocket 通知。 */
       let lastCheck: CheckUpdateResult | null = null;
@@ -1268,6 +1450,9 @@ export default {
       // without waking the bot, then close it with `question-end` once the answer comes back.
       // Only the owning session reaches this block; a subagent's call is never the pet's business.
       if (event?.type === 'tool/call' && data.name === 'ask_user_question') {
+        // An answering pet is already offered the card by the `user-questions/request`
+        // waterfall. Sending the reminder too would wake it twice for one decision.
+        if (petTakesAnswers()) return;
         const callId = String(data.callId ?? data.toolCallId ?? '');
         if (callId) {
           askCallId = callId;
@@ -1292,6 +1477,8 @@ export default {
         return;
       }
       if (event?.type === 'approval/asked') {
+        // The `approval/request` waterfall already offered this prompt to an answering pet.
+        if (petTakesAnswers()) return;
         notify({
           t: 'approval',
           name: typeof data.toolName === 'string' ? data.toolName : 'tool',

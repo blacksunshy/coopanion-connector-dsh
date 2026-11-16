@@ -162,6 +162,33 @@ export type HostFrame =
   | { t: 'question'; text: string; callId?: string }
   /** The question above was answered, skipped or timed out; stop reminding. */
   | { t: 'question-end'; callId: string }
+  /**
+   * A decision the pet itself may make: a tool-call approval or an `ask_user_question` card.
+   *
+   * Only sent to a pet that advertised the `answers` capability in `hello` — the person turned on
+   * the pet's "let Coo click DSH's prompts" switch. A pet that did not advertise it keeps receiving
+   * the plain `approval` / `question` notices, so an older pet sees exactly what it saw before.
+   *
+   * `id` keys the `answer` the pet sends back and the `request-end` that closes it. `options[].label`
+   * is what an answer selects, so the two sides never have to agree on option indexes.
+   */
+  | {
+      t: 'request';
+      id: string;
+      kind: 'approval' | 'question';
+      tool?: string;
+      reason?: string;
+      questions?: Array<{
+        id: string;
+        question: string;
+        detail?: string;
+        header?: string;
+        options?: Array<{ label: string; description?: string }>;
+        multiSelect?: boolean;
+      }>;
+    }
+  /** The request above is over: the pet answered, the person answered on the desktop, or it expired. */
+  | { t: 'request-end'; id: string; outcome: 'answered' | 'expired' | 'cancelled' }
   /** The turn ended badly. */
   | { t: 'error'; text: string }
   /**
@@ -200,8 +227,13 @@ export type HostFrame =
 
 /** Pet→Host frames. */
 export type PetFrame =
-  /** Must arrive first; a connection that sends anything else is closed. */
-  | { t: 'hello'; v: number; name: string }
+  /**
+   * Must arrive first; a connection that sends anything else is closed.
+   *
+   * `caps` lists what this pet can do beyond the base protocol. `answers` means it can take a
+   * `request` and return an `answer`; the Host only offers prompts to a pet that declares it.
+   */
+  | { t: 'hello'; v: number; name: string; caps?: string[] }
   /**
    * A person's words, submitted to the owning agent. `id` is echoed in `accepted`/`refused`.
    *
@@ -236,6 +268,16 @@ export type PetFrame =
   | { t: 'list-workspaces' }
   /** Drop the pin so the Host's own auto-follow picks the owner again. */
   | { t: 'unpin' }
+  /**
+   * Answer a `request` the Host sent. `decision` closes an approval; `answers` closes a question
+   * batch — one entry per question, each `selected` naming an option `label` the Host offered.
+   */
+  | {
+      t: 'answer';
+      id: string;
+      decision?: 'allowed-once' | 'rejected' | 'cancelled';
+      answers?: Array<{ id: string; selected: string[]; custom?: string }>;
+    }
   | { t: 'ping' };
 
 /**
@@ -274,7 +316,23 @@ export function parsePetFrame(raw: string): PetFrame | null {
   switch (frame.t) {
     case 'hello':
       if (typeof frame.v !== 'number' || typeof frame.name !== 'string') return null;
-      return { t: 'hello', v: frame.v, name: frame.name.slice(0, 64) };
+      return {
+        t: 'hello',
+        v: frame.v,
+        name: frame.name.slice(0, 64),
+        ...(Array.isArray(frame.caps)
+          ? {
+              caps: Array.from(
+                new Set(
+                  frame.caps
+                    .filter((cap): cap is string => typeof cap === 'string' && cap !== '')
+                    .slice(0, 8)
+                    .map((cap) => cap.slice(0, 32)),
+                ),
+              ),
+            }
+          : {}),
+      };
     case 'say': {
       if (typeof frame.id !== 'string' || typeof frame.text !== 'string') return null;
       const from = typeof frame.from === 'string' && frame.from.trim() ? frame.from : 'the pet';
@@ -303,6 +361,28 @@ export function parsePetFrame(raw: string): PetFrame | null {
       return { t: 'list-workspaces' };
     case 'unpin':
       return { t: 'unpin' };
+    case 'answer': {
+      if (typeof frame.id !== 'string' || !frame.id) return null;
+      const decision =
+        frame.decision === 'allowed-once' || frame.decision === 'rejected' || frame.decision === 'cancelled'
+          ? frame.decision
+          : undefined;
+      const answers = Array.isArray(frame.answers)
+        ? frame.answers.slice(0, 8).flatMap((entry) => {
+            if (typeof entry !== 'object' || entry === null) return [];
+            const row = entry as Record<string, unknown>;
+            if (typeof row.id !== 'string' || !row.id || !Array.isArray(row.selected)) return [];
+            const selected = row.selected
+              .filter((label): label is string => typeof label === 'string' && label !== '')
+              .slice(0, 8)
+              .map((label) => label.slice(0, 200));
+            const custom = typeof row.custom === 'string' && row.custom.trim() ? row.custom.slice(0, 2000) : undefined;
+            return [{ id: row.id.slice(0, 64), selected, ...(custom ? { custom } : {}) }];
+          })
+        : undefined;
+      if (decision === undefined && (answers === undefined || answers.length === 0)) return null;
+      return { t: 'answer', id: frame.id.slice(0, 64), ...(decision ? { decision } : {}), ...(answers ? { answers } : {}) };
+    }
     default:
       return null;
   }

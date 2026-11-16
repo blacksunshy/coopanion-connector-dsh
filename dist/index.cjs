@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// node_modules/ws/lib/constants.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/ws/lib/constants.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js"(exports2, module2) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -57,11 +57,10 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/ws/lib/buffer-util.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/ws/lib/buffer-util.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
     "use strict";
-    var { websocketMask, websocketUnmask } = require("http");
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
     function concat(list, totalLength) {
@@ -116,16 +115,7 @@ var require_buffer_util = __commonJS({
       toBuffer,
       unmask: _unmask
     };
-    if (websocketMask) {
-      module2.exports.mask = function(source, mask, output, offset, length) {
-        if (length < 24) _mask(source, mask, output, offset, length);
-        else websocketMask(source, mask, output, offset, length);
-      };
-      module2.exports.unmask = function(buffer, mask) {
-        if (buffer.length < 24) _unmask(buffer, mask);
-        else websocketUnmask(buffer, mask);
-      };
-    } else if (!process.env.WS_NO_BUFFER_UTIL) {
+    if (!process.env.WS_NO_BUFFER_UTIL) {
       try {
         const bufferUtil = require("bufferutil");
         module2.exports.mask = function(source, mask, output, offset, length) {
@@ -142,9 +132,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/ws/lib/limiter.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/ws/lib/limiter.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js"(exports2, module2) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -192,9 +182,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/ws/lib/permessage-deflate.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
     "use strict";
     var zlib = require("zlib");
     var bufferUtil = require_buffer_util();
@@ -575,9 +565,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/ws/lib/validation.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/ws/lib/validation.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js"(exports2, module2) {
     "use strict";
     var { isUtf8 } = require("buffer");
     var { hasBlob } = require_constants();
@@ -776,9 +766,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/ws/lib/receiver.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/ws/lib/receiver.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js"(exports2, module2) {
     "use strict";
     var { Writable } = require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -1188,7 +1178,6 @@ var require_receiver = __commonJS({
             unmask(data, this._mask);
           }
         }
-        this._mask = void 0;
         if (this._opcode > 7) {
           this.controlMessage(data, cb);
           return;
@@ -1400,9 +1389,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/ws/lib/sender.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/ws/lib/sender.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js"(exports2, module2) {
     "use strict";
     var { Duplex } = require("stream");
     var { randomFillSync } = require("crypto");
@@ -1521,15 +1510,12 @@ var require_sender = __commonJS({
           target[2] = target[3] = 0;
           target.writeUIntBE(dataLength, 4, 6);
         }
-        if (!options.mask) {
-          return dataLength ? [target, data] : [target];
-        }
+        if (!options.mask) return [target, data];
         target[1] |= 128;
         target[offset - 4] = mask[0];
         target[offset - 3] = mask[1];
         target[offset - 2] = mask[2];
         target[offset - 1] = mask[3];
-        if (!dataLength) return [target];
         if (skipMasking) return [target, data];
         if (merge) {
           applyMask(data, mask, target, offset, dataLength);
@@ -1896,9 +1882,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/ws/lib/event-target.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/ws/lib/event-target.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js"(exports2, module2) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -2125,9 +2111,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/ws/lib/extension.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/ws/lib/extension.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -2278,15 +2264,14 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/ws/lib/websocket.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var https = require("https");
     var http = require("http");
     var net = require("net");
-    var querystring = require("querystring");
     var tls = require("tls");
     var { randomBytes, createHash } = require("crypto");
     var { Duplex, Readable } = require("stream");
@@ -2813,9 +2798,10 @@ var require_websocket = __commonJS({
           throw new SyntaxError(`Invalid URL: ${address}`);
         }
       }
-      if (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") {
-        parsedUrl = new URL(parsedUrl);
-        parsedUrl.protocol = parsedUrl.protocol === "http:" ? "ws:" : "wss:";
+      if (parsedUrl.protocol === "http:") {
+        parsedUrl.protocol = "ws:";
+      } else if (parsedUrl.protocol === "https:") {
+        parsedUrl.protocol = "wss:";
       }
       websocket._url = parsedUrl.href;
       const isSecure = parsedUrl.protocol === "wss:";
@@ -2884,19 +2870,12 @@ var require_websocket = __commonJS({
         }
       }
       if (parsedUrl.username || parsedUrl.password) {
-        const username = querystring.unescape(parsedUrl.username);
-        const password = querystring.unescape(parsedUrl.password);
-        opts.auth = `${username}:${password}`;
+        opts.auth = `${parsedUrl.username}:${parsedUrl.password}`;
       }
       if (isIpcUrl) {
-        const i = opts.path.indexOf(":");
-        if (i === -1) {
-          opts.socketPath = opts.path;
-          opts.path = "";
-        } else {
-          opts.socketPath = opts.path.slice(0, i);
-          opts.path = opts.path.slice(i + 1);
-        }
+        const parts = opts.path.split(":");
+        opts.socketPath = parts[0];
+        opts.path = parts[1];
       }
       let req;
       if (opts.followRedirects) {
@@ -3091,13 +3070,8 @@ var require_websocket = __commonJS({
     function receiverOnConclude(code, reason2) {
       const websocket = this[kWebSocket];
       websocket._closeFrameReceived = true;
+      websocket._closeMessage = reason2;
       websocket._closeCode = code;
-      if (reason2.length === 0) {
-        websocket._closeMessage = EMPTY_BUFFER;
-      } else {
-        websocket._closeMessage = Buffer.allocUnsafeSlow(reason2.length);
-        websocket._closeMessage.set(reason2);
-      }
       if (websocket._socket[kWebSocket] === void 0) return;
       websocket._socket.removeListener("data", socketOnData);
       process.nextTick(resume, websocket._socket);
@@ -3199,9 +3173,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/ws/lib/stream.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/ws/lib/stream.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js"(exports2, module2) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = require("stream");
@@ -3297,9 +3271,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/ws/lib/subprotocol.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/ws/lib/subprotocol.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -3342,9 +3316,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/ws/lib/websocket-server.js
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
+  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var http = require("http");
@@ -3762,7 +3736,7 @@ module.exports = __toCommonJS(index_exports);
 var import_node_crypto = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 
-// node_modules/ws/wrapper.mjs
+// node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
 var import_extension = __toESM(require_extension(), 1);
 var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -3785,7 +3759,18 @@ function parsePetFrame(raw) {
   switch (frame.t) {
     case "hello":
       if (typeof frame.v !== "number" || typeof frame.name !== "string") return null;
-      return { t: "hello", v: frame.v, name: frame.name.slice(0, 64) };
+      return {
+        t: "hello",
+        v: frame.v,
+        name: frame.name.slice(0, 64),
+        ...Array.isArray(frame.caps) ? {
+          caps: Array.from(
+            new Set(
+              frame.caps.filter((cap) => typeof cap === "string" && cap !== "").slice(0, 8).map((cap) => cap.slice(0, 32))
+            )
+          )
+        } : {}
+      };
     case "say": {
       if (typeof frame.id !== "string" || typeof frame.text !== "string") return null;
       const from = typeof frame.from === "string" && frame.from.trim() ? frame.from : "the pet";
@@ -3808,6 +3793,20 @@ function parsePetFrame(raw) {
       return { t: "list-workspaces" };
     case "unpin":
       return { t: "unpin" };
+    case "answer": {
+      if (typeof frame.id !== "string" || !frame.id) return null;
+      const decision = frame.decision === "allowed-once" || frame.decision === "rejected" || frame.decision === "cancelled" ? frame.decision : void 0;
+      const answers = Array.isArray(frame.answers) ? frame.answers.slice(0, 8).flatMap((entry) => {
+        if (typeof entry !== "object" || entry === null) return [];
+        const row = entry;
+        if (typeof row.id !== "string" || !row.id || !Array.isArray(row.selected)) return [];
+        const selected = row.selected.filter((label) => typeof label === "string" && label !== "").slice(0, 8).map((label) => label.slice(0, 200));
+        const custom = typeof row.custom === "string" && row.custom.trim() ? row.custom.slice(0, 2e3) : void 0;
+        return [{ id: row.id.slice(0, 64), selected, ...custom ? { custom } : {} }];
+      }) : void 0;
+      if (decision === void 0 && (answers === void 0 || answers.length === 0)) return null;
+      return { t: "answer", id: frame.id.slice(0, 64), ...decision ? { decision } : {}, ...answers ? { answers } : {} };
+    }
     default:
       return null;
   }
@@ -3890,6 +3889,8 @@ var PetHub = class {
   /** True after this.connection has received its first `ready` frame. A pet in waiting state may
    *  have an open connection but has not yet been told which session to speak into. */
   bound = false;
+  /** What the current connection said it can do in `hello`. Reset with every new connection. */
+  caps = /* @__PURE__ */ new Set();
   timer;
   get connected() {
     return this.connection !== null && this.connection.readyState === this.connection.OPEN;
@@ -3897,6 +3898,10 @@ var PetHub = class {
   /** Whether an open connection has been bound to a DSH conversation (has received `ready`). */
   get boundState() {
     return this.bound && this.connected;
+  }
+  /** What the connected pet declared in `hello`; empty when nothing is connected. */
+  get capabilities() {
+    return this.connected ? this.caps : /* @__PURE__ */ new Set();
   }
   /** The upgrade route `webServer.registerUpgrade` takes.
    *
@@ -3953,6 +3958,7 @@ var PetHub = class {
     this.connection?.close(4e3, "replaced");
     this.connection = ws;
     this.bound = false;
+    this.caps = /* @__PURE__ */ new Set();
     let greeted = false;
     ws.on("message", (data, isBinary) => {
       if (isBinary) return;
@@ -3970,6 +3976,8 @@ var PetHub = class {
             return;
           }
           greeted = true;
+          this.caps = new Set(frame.caps ?? []);
+          if (this.caps.size > 0) this.opts.log("info", `pet capabilities: ${Array.from(this.caps).join(", ")}`);
           const welcome = this.opts.welcome();
           if (welcome) {
             this.bound = true;
@@ -4052,6 +4060,11 @@ var PetHub = class {
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reason2 === null ? { t: "unpinned" } : { t: "refused", reason: reason2 }));
           }
+          return;
+        }
+        case "answer": {
+          const answered = this.opts.answer?.(frame.id, frame.decision, frame.answers) === true;
+          if (!answered) this.opts.log("warn", `pet answered a request this Host is no longer waiting on: ${frame.id}`);
           return;
         }
       }
@@ -4583,7 +4596,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.24") return "0.2.24";
+  if ("0.2.25") return "0.2.25";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -5012,6 +5025,7 @@ var plugin_default = {
       if (!hub?.connected) return;
       hub.send({ t: "session-list", sessions: agents.listSessions(), pinned: agents.isPinned, owner: agents.ownerSession });
     };
+    const petTakesAnswers = () => hub !== null && hub.boundState && hub.capabilities.has("answers");
     const workspaceRows = () => {
       const registry = root.get("workspaceRegistry");
       const workspaces = registry?.list?.() ?? [];
@@ -5046,6 +5060,39 @@ var plugin_default = {
               rescanning = null;
             });
             return rescanning;
+          };
+          const ASK_TTL_MS = 5 * 60 * 1e3;
+          const pendingAsks = /* @__PURE__ */ new Map();
+          const askPet = (kind, frame, signal) => {
+            if (!hub || !hub.boundState || !hub.capabilities.has("answers")) return Promise.resolve(void 0);
+            const petHub = hub;
+            return new Promise((resolve2) => {
+              let done = false;
+              const finish = (value) => {
+                if (done) return;
+                done = true;
+                pendingAsks.delete(frame.id);
+                clearTimeout(timer);
+                signal?.removeEventListener("abort", onAbort);
+                resolve2(value);
+              };
+              const onAbort = () => {
+                hub?.send({ t: "request-end", id: frame.id, outcome: "cancelled" });
+                finish(void 0);
+              };
+              const timer = setTimeout(() => {
+                hub?.send({ t: "request-end", id: frame.id, outcome: "expired" });
+                log("info", `the pet did not answer ${kind} ${frame.id} within ${ASK_TTL_MS / 6e4} minutes; handing it back to the desktop`);
+                finish(void 0);
+              }, ASK_TTL_MS);
+              timer.unref?.();
+              pendingAsks.set(frame.id, { kind, resolve: finish, timer });
+              if (!petHub.send(frame)) {
+                finish(void 0);
+                return;
+              }
+              signal?.addEventListener("abort", onAbort, { once: true });
+            });
           };
           const pet = new PetHub({
             welcome: () => {
@@ -5181,9 +5228,88 @@ var plugin_default = {
               return outcome;
             },
             listWorkspaces: () => workspaceRows(),
+            answer: (id, decision, answers) => {
+              const entry = pendingAsks.get(id);
+              if (!entry) return false;
+              if (entry.kind === "approval" && decision === void 0) return false;
+              if (entry.kind === "question" && (answers === void 0 || answers.length === 0)) return false;
+              clearTimeout(entry.timer);
+              hub?.send({ t: "request-end", id, outcome: "answered" });
+              entry.resolve(entry.kind === "approval" ? decision : answers);
+              return true;
+            },
             log
           });
           hub = pet;
+          const sessionOf = (agent) => {
+            const session = agent?.session;
+            return typeof session?.id === "string" ? session.id : "";
+          };
+          root.on("approval/request", (async (request, next) => {
+            try {
+              if (!petTakesAnswers()) return next();
+              const record = request ?? {};
+              const session = sessionOf(record.agent);
+              if (!session || session !== agents.ownerSession) return next();
+              const tool = typeof record.toolName === "string" && record.toolName ? record.toolName : "tool";
+              const reason2 = typeof record.reason === "string" && record.reason ? record.reason : typeof record.displayReason === "string" ? record.displayReason : "";
+              const decision = await askPet("approval", {
+                t: "request",
+                id: (0, import_node_crypto.randomUUID)(),
+                kind: "approval",
+                tool: tool.slice(0, 200),
+                reason: reason2.slice(0, 2e3)
+              }, record.signal);
+              if (decision === void 0) return next();
+              log("info", `the pet answered approval for ${tool} on ${session}: ${decision}`);
+              return decision;
+            } catch (err) {
+              log("warn", `could not offer an approval to the pet: ${err.message}`);
+              return next();
+            }
+          }), { global: true, prepend: true });
+          root.on("user-questions/request", (async (request, next) => {
+            try {
+              if (!petTakesAnswers()) return next();
+              const record = request ?? {};
+              const session = sessionOf(record.agent);
+              if (!session || session !== agents.ownerSession) return next();
+              const questions = Array.isArray(record.questions) ? record.questions : [];
+              const offered = questions.slice(0, 8).flatMap((raw) => {
+                const row = raw ?? {};
+                if (typeof row.id !== "string" || row.id === "") return [];
+                const options = Array.isArray(row.options) ? row.options.slice(0, 12).flatMap((choice) => {
+                  const option = choice ?? {};
+                  if (typeof option.label !== "string" || option.label === "") return [];
+                  return [{
+                    label: option.label.slice(0, 200),
+                    ...typeof option.description === "string" && option.description ? { description: option.description.slice(0, 300) } : {}
+                  }];
+                }) : void 0;
+                return [{
+                  id: row.id.slice(0, 64),
+                  question: typeof row.question === "string" ? row.question.slice(0, 500) : "",
+                  ...typeof row.detail === "string" && row.detail ? { detail: row.detail.slice(0, 1e3) } : {},
+                  ...typeof row.header === "string" && row.header ? { header: row.header.slice(0, 100) } : {},
+                  ...options && options.length > 0 ? { options } : {},
+                  ...typeof row.multiSelect === "boolean" ? { multiSelect: row.multiSelect } : {}
+                }];
+              });
+              if (offered.length === 0) return next();
+              const answers = await askPet("question", {
+                t: "request",
+                id: (0, import_node_crypto.randomUUID)(),
+                kind: "question",
+                questions: offered
+              }, record.signal);
+              if (answers === void 0 || answers.length === 0) return next();
+              log("info", `the pet answered ${answers.length} question(s) on ${session}`);
+              return { answers };
+            } catch (err) {
+              log("warn", `could not offer a question to the pet: ${err.message}`);
+              return next();
+            }
+          }), { global: true, prepend: true });
           let lastCheck = null;
           let lastNotifiedVersion = null;
           const UPGRADE_OWNER = `coopanion-${Math.random().toString(36).slice(2)}`;
@@ -5549,6 +5675,7 @@ var plugin_default = {
         return;
       }
       if (event?.type === "tool/call" && data.name === "ask_user_question") {
+        if (petTakesAnswers()) return;
         const callId = String(data.callId ?? data.toolCallId ?? "");
         if (callId) {
           askCallId = callId;
@@ -5572,6 +5699,7 @@ var plugin_default = {
         return;
       }
       if (event?.type === "approval/asked") {
+        if (petTakesAnswers()) return;
         notify({
           t: "approval",
           name: typeof data.toolName === "string" ? data.toolName : "tool",
