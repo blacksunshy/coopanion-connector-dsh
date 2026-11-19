@@ -9,7 +9,7 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import plugin, { buildUserMessage, messageText } from '../src/plugin.ts';
 import { PET_PATH, PROTOCOL_VERSION } from '../src/pet-hub.ts';
 
@@ -226,6 +226,47 @@ describe('a prompt the pet can answer (discussion #19)', () => {
 
     send({ t: 'answer', id: request.id, answers: [{ id: 'q1', selected: ['乙'] }] });
     expect(await pending).toEqual({ answers: [{ id: 'q1', selected: ['乙'] }] });
+  });
+});
+
+describe('auto-follow: the host tracks where the person speaks', () => {
+  it('moves the owner when the person speaks in another session (default)', async () => {
+    // AgentRegistry.add() makes the newest non-subagent the owner on insert, so emit b first:
+    // add(b) → owner=b, add(a) → owner=a. Now b is the older sibling and a the owner.
+    const { emit, connect } = await loaded();
+    emit('agent/created', { agent: agentOf('session-b') });
+    emit('agent/created', { agent: agentOf('session-a') });
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.some((frame) => frame.t === 'ready'));
+    expect(frames.find((frame) => frame.t === 'ready')).toMatchObject({ t: 'ready', session: 'session-a' });
+
+    // The person speaks in session-b: auto-follow moves the owner there.
+    emit('session/event', { id: 'session-b' }, { type: 'user/message', data: { message: '继续' } });
+    await until(() => frames.filter((frame) => frame.t === 'ready').length >= 2);
+    const ready2 = frames.filter((frame) => frame.t === 'ready')[1];
+    expect(ready2).toMatchObject({ t: 'ready', session: 'session-b' });
+  });
+
+  it('stays put when AUTO_FOLLOW=0 even if the person moves', async () => {
+    vi.stubEnv('AUTO_FOLLOW', '0');
+    try {
+      const { emit, connect } = await loaded();
+      emit('agent/created', { agent: agentOf('session-b') });
+      emit('agent/created', { agent: agentOf('session-a') });
+      const { frames, send } = await connect();
+      send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+      await until(() => frames.some((frame) => frame.t === 'ready'));
+      expect(frames.find((frame) => frame.t === 'ready')).toMatchObject({ t: 'ready', session: 'session-a' });
+
+      emit('session/event', { id: 'session-b' }, { type: 'user/message', data: { message: '继续' } });
+      await new Promise<void>((done) => setTimeout(done, 120));
+      const readyFrames = frames.filter((frame) => frame.t === 'ready');
+      expect(readyFrames).toHaveLength(1);
+      expect(readyFrames[0]).toMatchObject({ t: 'ready', session: 'session-a' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

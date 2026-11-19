@@ -75,6 +75,21 @@ const AUTO_CHECK_INITIAL_DELAY_MS = 30 * 1000;
 const AUTO_CHECK_ENABLED = Boolean(process.env.AUTO_UPDATE_CHECK) || process.env.AUTO_UPDATE_CHECK === '1';
 
 /**
+ * Auto-follow：人在哪说话、桌宠就跟着哪条会话。这是默认行为，但你关掉 pin 可能就是不想
+ * 让它悄悄挪走；或者你在 B 会话里只是想让桌宠继续往 A 里派活，这时"自动跳会话"就是干扰。
+ * 设环境变量 `AUTO_FOLLOW=0` 可关掉它；设 `1` 或不设则保持默认。
+ *
+ * 关掉后，人在 B 会话说话不会把 owner 从 A 切过去；但桌宠**显式** `pick` 的动作仍然生效，
+ * 因为那是人通过桌宠面板做出的选择 —— 跟 pin 同级、比任何自动行为都强。
+ *
+ * 每次查询当前环境变量，所以 DSH 进程启动前设、或重启前改 env 文件，都会生效。
+ */
+function autoFollowEnabled(): boolean {
+  const v = process.env.AUTO_FOLLOW;
+  return !(v === '0' || v === 'false');
+}
+
+/**
  * Proof of load, appended once per activation.
  *
  * A bundle that fails to resolve or activate leaves no other trace: the profile still lists it and
@@ -546,7 +561,7 @@ export default {
     // `root.webServer` is a cordis service accessor: reading it without an inject throws and the
     // whole apply() dies before the try below, taking every registered route with it (issue #9).
     // `get()` is the safe read — undefined when the Host runs no web console.
-    logLine('apply-started', { hasWebServer: Boolean(root.get('webServer')) });
+    logLine('apply-started', { hasWebServer: Boolean(root.get('webServer')), autoFollow: autoFollowEnabled() });
     const agents = new AgentRegistry();
     // DSH's archive set, read at each ownership decision: an archived Session stays live but every
     // model step proposed for it is rejected, so speaking into one would end as `blocked`.
@@ -1419,12 +1434,12 @@ export default {
         pushSessions();
       }
       debug('session-event', { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
-      // Auto-follow：只对**人真的动手**的事件生效（用户说话、答复审批）。
+      // Auto-follow：只对**人真的动手**的事件生效（用户说话、答复审批），并且必须开着开关。
       // 模型的输出（assistant/message、turn/start、turn/end、tool/call）刻意不算：模型在哪干活
       // 不等于人在哪看。桌宠刚指名把话交给 A，我在 B 里继续回了几条，owner 就跟着 B 走、pin 也被
       // 清掉 —— 那正是「默认送到这里」标错、下一句发错会话的成因。人的动作仍然比 pin 强：
       // 那是一个人当场表达的位置，所以 forceOwner 照旧会清 pin，让标记不会悄悄跟着挪到别的会话。
-      if (agents.ownerSession !== id && isPersonActionEvent(event)) {
+      if (autoFollowEnabled() && agents.ownerSession !== id && isPersonActionEvent(event)) {
         const agent = agents.liveGet(id);
         debug('auto-follow-check', { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {

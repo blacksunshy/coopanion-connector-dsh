@@ -4596,7 +4596,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.25") return "0.2.25";
+  if ("0.2.26") return "0.2.26";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -4708,6 +4708,10 @@ var PLUGIN_NAME = "coopanion-connector-dsh";
 var AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1e3;
 var AUTO_CHECK_INITIAL_DELAY_MS = 30 * 1e3;
 var AUTO_CHECK_ENABLED = Boolean(process.env.AUTO_UPDATE_CHECK) || process.env.AUTO_UPDATE_CHECK === "1";
+function autoFollowEnabled() {
+  const v = process.env.AUTO_FOLLOW;
+  return !(v === "0" || v === "false");
+}
 function proveLoad() {
   const line = `${JSON.stringify({
     at: (/* @__PURE__ */ new Date()).toISOString(),
@@ -4995,7 +4999,7 @@ var plugin_default = {
       const logger = root.get("logger");
       logger?.warn?.(line);
     });
-    logLine("apply-started", { hasWebServer: Boolean(root.get("webServer")) });
+    logLine("apply-started", { hasWebServer: Boolean(root.get("webServer")), autoFollow: autoFollowEnabled() });
     const agents = new AgentRegistry();
     agents.setArchivedCheck((id) => {
       const registry = root.get("workspaceRegistry");
@@ -5652,7 +5656,7 @@ var plugin_default = {
         pushSessions();
       }
       debug("session-event", { type: event?.type, id, ownerSession: agents.ownerSession, liveCount: agents.liveSize });
-      if (agents.ownerSession !== id && isPersonActionEvent(event)) {
+      if (autoFollowEnabled() && agents.ownerSession !== id && isPersonActionEvent(event)) {
         const agent = agents.liveGet(id);
         debug("auto-follow-check", { id, agentKnown: Boolean(agent), isSubagent: agent ? agents.isSubagent(agent) : null, pinned: agents.isPinned });
         if (agent && !agents.isSubagent(agent)) {

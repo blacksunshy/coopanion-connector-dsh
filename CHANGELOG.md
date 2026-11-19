@@ -1,5 +1,12 @@
 # 更新说明
 
+## 0.2.26 — 已发布（GitHub Release）
+
+- **新增 `AUTO_FOLLOW=0` 环境变量开关，关掉自动跳会话（discussion [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) @z-o-n-e 的请求）**：默认不变（人在哪说话、桌宠就跟着哪条会话，`forceOwner` 会清 pin）；设 `AUTO_FOLLOW=0` 或 `AUTO_FOLLOW=false` 后，人在别的会话里说话不再悄悄把归属切过去。桌宠**显式** `pick` 仍然生效（那是通过桌宠面板做出的选择，和 pin 同级）；agent/created 的"最新会话成为 owner"逻辑保持不变（那是一个新会话诞生的强信号，不是被动跟随）
+- `apply-started` 日志现在多打一个 `autoFollow: true/false`，Host 日志里能一眼确认当前开关状态，免得开了没生效还以为是别的原因
+- fatfish 不需要跟着发版：这个开关完全在 Host 侧生效，桌宠侧没有对应的行为需要联动
+- 测试：`tsc --noEmit` 通过，`vitest` 125 passed（新增两条回归——默认自动跳、`AUTO_FOLLOW=0` 时 owner 不动）；`dist/index.cjs` 已重建，`verify:dist` 通过
+
 ## 0.2.25 — 已发布（GitHub Release）
 
 - **桌宠可以直接替你点 DSH 的选项与批准（讨论 [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) 里 qwq-awa-qnq 的建议）**：新增 `request` / `request-end` 两个 Host → 桌宠帧，以及 `answer` 桌宠 → Host 帧。DSH 弹出批准或 `ask_user_question` 时，Host 把题面与选项发给桌宠；桌宠回一个决定，Host 就当作你已经点过——批准回 `allowed-once` / `rejected` / `cancelled`，问句回选中的选项（按 label 往返，不按顺序，避免两侧漂移）
