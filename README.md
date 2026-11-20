@@ -113,6 +113,7 @@ pnpm run build          # 产出 dist/index.cjs
 | **会话清单带运行状态**：`SessionSummary.running` 可选项，取 `agent.status`，读不到时退回本插件跟的 `turn/start`／`turn/end`；轮次起止时 push `session-list` | **≥ 0.2.23** | **≥ 0.6.25**（旧桌宠忽略该字段；没有它桌宠分不出「还在跑」与「没回答」） |
 | **看到全部会话**：会话清单改为读 `sessionController.list()`（DSH 侧栏用的同一份枚举，含标题与运行态），不再只靠 `agent/created` 攒到的几个；DSH 报存在但本进程没 Agent 的会话以 `SessionSummary.cold: true` 出现，指名往里说话时按需 `resolveAgent` 激活；未绑定的桌宠也能收到 `session-list`；订阅 `api-session/added`／`removed` 增量更新 | **≥ 0.2.24** | **≥ 0.6.26**（旧桌宠忽略 `cold` 字段照常工作；但没有这一项时桌宠只能看见恰好被 resume 过的那两三个会话，选错目标的根因仍在） |
 | **桌宠替人物点批准与选项**：`request` / `request-end` 两个 Host → 桌宠帧与 `answer` 回帧；桌宠在 `hello` 里带 `caps: ['answers']` 才启用，只接管 `ownerSession`，5 分钟 TTL 后交还桌面 | **≥ 0.2.25** | **≥ 0.6.26**（设置里「替人物点 DSH 的选项与批准」，默认关；旧桌宠不声明能力，继续走 `approval` / `question` 通知） |
+| **上下文占用改读可信数字**：`turn-end.used` 优先取 `tokenMeter.contextPressure(session).projectedTokens`；`used > size`、负数或缺数字时不上报 `used` / `size` | **≥ 0.2.28** | **≥ 0.6.28**（桌宠自带同样的护栏，旧 Host 报超窗口数字时也退回 400 轮兜底，不再误交接刚开的会话） |
 
 桌宠侧的扩展市场说明与 CHANGELOG 写的是同一组版本要求，两边要一起改，改一边算漏项。
 

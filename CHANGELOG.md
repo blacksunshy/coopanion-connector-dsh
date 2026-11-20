@@ -1,5 +1,12 @@
 # 更新说明
 
+## 0.2.28 — 已发布（GitHub Release）
+
+- **`turn-end` 的占用数字改读 DSH 自己的 `contextPressure`（issue [#17](https://github.com/blacksunshy/coopanion-connector-dsh/issues/17)）**：此前读 `tokenMeter.measure().totalTokens`，那是会话原始 transcript 的长度。代理模型在上游折叠历史时，transcript 会比实际发出的 prompt 长得多——实测 1.36M tokens 对 1M 窗口、真实占用只有 12.5%，桌宠据此把刚开的会话交接掉了。现在优先取 `contextPressure(session).projectedTokens`（DSH 自己决定压缩时用的就是它），只有旧 Host 没有 `contextPressure` 时才退回 `measure()`
+- **不可能的占用一律不上报**：`used > size`、负数或缺少其中一个数时，`turn-end` 里干脆不带 `used` / `size`，桌宠退回 400 轮兜底。宁可少报一个数，也不给桌宠一个会把它带错方向的数
+- 桌宠侧对应加固：`cortico-world-fatfish ≥ 0.6.28` 也自带同样的护栏（`used > size` 视为不可信，退回轮次），所以「新桌宠 + 旧 Host」的组合同样不会再误交接
+- 测试：`tsc --noEmit` 通过；`vitest` **127 passed**（新增 `contextPressure` 优先于 `measure`、超窗口数字被丢弃两条）；`dist/index.cjs` 已重建，`verify:dist` 通过
+
 ## 0.2.27 — 已发布（GitHub Release）
 
 - **包简介重写**：原先 `package.json` 的 description 把 0.2.9 以来每个版本的修复都堆在一起（2.8 KB），在 DSH 插件市场里显得像变更日志。现在只留「它是什么」与「怎么装、配哪个桌宠版本」，逐版改动统一看本文件

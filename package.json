@@ -1,8 +1,8 @@
 {
   "name": "coopanion-connector-dsh",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "type": "module",
-  "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports turns, approvals and replies, and accepts the pet's words into the conversation that owns it.\n\nInstall as a DSH plugin from this repository (GitHub only, not on npm). Pairs with cortico-world-fatfish >= 0.6.27; the README pairing table lists which pet feature needs which Host version. Set AUTO_FOLLOW=0 to keep the owner from following the person across conversations.",
+  "description": "Bridge between the Coopanion desktop pet (cortico-world-fatfish) and DeepSeek Harness: one loopback WebSocket where DSH reports turns, approvals and replies, and accepts the pet's words into the conversation that owns it.\n\nInstall as a DSH plugin from this repository (GitHub only, not on npm). Pairs with cortico-world-fatfish >= 0.6.28; the README pairing table lists which pet feature needs which Host version. Set AUTO_FOLLOW=0 to keep the owner from following the person across conversations.",
   "author": "Pal AI Lab",
   "license": "AGPL-3.0-or-later",
   "repository": {

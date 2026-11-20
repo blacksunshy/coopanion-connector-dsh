@@ -452,6 +452,49 @@ describe('a conversation the pet asks DSH to start', () => {
   });
 });
 
+describe('the context figure a turn-end carries (issue #17)', () => {
+  /** An agent whose routed model has a window, so occupancy can be reported. */
+  function agentWithWindow(id: string, contextWindow: number): unknown {
+    const agent = agentOf(id) as unknown as { session: { id: string; cwd: string; requestContext?(): { contextWindow?: number } } };
+    agent.session.requestContext = () => ({ contextWindow });
+    return agent;
+  }
+
+  /** Runs one turn to its end and returns the frame the pet heard. */
+  async function turnEndFrame(emit: (event: string, ...args: unknown[]) => void, connect: Awaited<ReturnType<typeof loaded>>['connect']): Promise<Record<string, unknown>> {
+    const { frames, send } = await connect();
+    send({ t: 'hello', v: PROTOCOL_VERSION, name: 'Coo' });
+    await until(() => frames.length > 0);
+    emit('session/event', { id: 'session-1' }, { type: 'turn/end', data: { turn: 1, reason: 'completed' } });
+    await until(() => frames.some((frame) => frame.t === 'turn-end'));
+    return frames.find((frame) => frame.t === 'turn-end')!;
+  }
+
+  it('reports what DSH itself weighs against the window, not the raw transcript', async () => {
+    const { emit, connect } = await loaded({
+      tokenMeter: {
+        measure: () => ({ totalTokens: 1_360_000 }),
+        contextPressure: () => ({ projectedTokens: 125_000 }),
+      },
+    });
+    emit('agent/created', { agent: agentWithWindow('session-1', 1_000_000) });
+    expect(await turnEndFrame(emit, connect)).toMatchObject({ used: 125_000, size: 1_000_000 });
+  });
+
+  it('drops a figure larger than the window instead of reporting a full context', async () => {
+    // The transcript the old measurement read was longer than the window it was compared with, so
+    // the pet handed over a conversation that was 12.5% full. An impossible figure is not a full
+    // one: the frame leaves `used`/`size` out and the pet keeps its turn-count fallback.
+    const { emit, connect } = await loaded({
+      tokenMeter: { measure: () => ({ totalTokens: 1_360_000 }) },
+    });
+    emit('agent/created', { agent: agentWithWindow('session-1', 1_000_000) });
+    const frame = await turnEndFrame(emit, connect);
+    expect(frame).not.toHaveProperty('used');
+    expect(frame).not.toHaveProperty('size');
+  });
+});
+
 describe('sessions the Host opened before this plugin loaded (issue #13)', () => {
   it('registers a session whose agent is only reachable through an async resolveAgent', async () => {
     // 0.2.1-rc.5 exposes `sessionController.agents` as an ApiSessionAgentController: not a Map, not

@@ -4596,7 +4596,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.27") return "0.2.27";
+  if ("0.2.28") return "0.2.28";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
@@ -5891,15 +5891,23 @@ window.addEventListener('DOMContentLoaded', () => {
 function occupancyOf(host, agent) {
   const meter = host.get("tokenMeter");
   const session = agent?.session;
-  const size = session?.requestContext?.()?.contextWindow;
-  if (!meter?.measure || !session) return {};
+  if (!session) return {};
+  const size = session.requestContext?.()?.contextWindow;
+  if (typeof size !== "number" || !Number.isFinite(size) || size <= 0) return {};
+  const usable = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
   let used;
   try {
-    used = meter.measure(session).totalTokens;
+    if (typeof meter?.contextPressure === "function") {
+      const projected = meter.contextPressure(session)?.projectedTokens;
+      used = usable(projected) ? projected : void 0;
+    } else if (typeof meter?.measure === "function") {
+      const measured = meter.measure(session)?.totalTokens;
+      used = usable(measured) ? measured : void 0;
+    }
   } catch {
     return {};
   }
-  if (typeof used !== "number" || !Number.isFinite(used) || typeof size !== "number" || !Number.isFinite(size) || size <= 0) return {};
+  if (used === void 0 || used > size) return {};
   return { used, size };
 }
 // Annotate the CommonJS export names for ESM import in node:

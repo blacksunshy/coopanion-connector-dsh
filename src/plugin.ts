@@ -1708,19 +1708,43 @@ window.addEventListener('DOMContentLoaded', () => {
 
 /**
  * How much of the routed model's context one session has spent, when DSH can say both numbers.
- * Returns `{ used, size }` only when both are finite numbers and `size` is positive; otherwise an
- * empty object so the consumer keeps its old behaviour (no usage figure, no handover). Every access
- * is guarded: DSH's `tokenMeter` service and `session.requestContext()` are not part of this
- * plugin's typed surface, and a missing or reshaped API must never break the turn-end frame.
+ * Returns `{ used, size }` only when both are usable; otherwise an empty object so the consumer
+ * keeps its old behaviour (no usage figure, no handover). Every access is guarded: DSH's
+ * `tokenMeter` service and `session.requestContext()` are not part of this plugin's typed
+ * surface, and a missing or reshaped API must never break the turn-end frame.
+ *
+ * Two figures exist and they are not interchangeable:
+ *   1. `tokenMeter.contextPressure(session).projectedTokens` — what DSH itself weighs against the
+ *      window when deciding to compact. It counts the prompt that will actually be sent.
+ *   2. `tokenMeter.measure(session).totalTokens` — the raw transcript length, kept only for Hosts
+ *      that have no `contextPressure`.
+ * A proxied model folds history upstream, so the transcript can be far longer than the prompt:
+ * issue #17 reported 1.36M "used" against a 1M window at a real 12.5%. A figure larger than the
+ * window is therefore treated as unusable rather than as a full context, and the pet falls back
+ * to its own turn count instead of throwing away a conversation that had barely started.
  */
 function occupancyOf(host: { get(name: string): unknown }, agent: unknown): { used?: number; size?: number } {
-  const meter = host.get('tokenMeter') as { measure?: (session: unknown) => { totalTokens?: number } } | undefined;
+  const meter = host.get('tokenMeter') as {
+    measure?: (session: unknown) => { totalTokens?: number } | undefined;
+    contextPressure?: (session: unknown) => { projectedTokens?: number } | undefined;
+  } | undefined;
   const session = (agent as { session?: { requestContext?(): { contextWindow?: number } | undefined } } | null)?.session;
-  const size = session?.requestContext?.()?.contextWindow;
-  if (!meter?.measure || !session) return {};
+  if (!session) return {};
+  const size = session.requestContext?.()?.contextWindow;
+  if (typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return {};
+  const usable = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0;
   let used: number | undefined;
-  try { used = meter.measure(session).totalTokens; } catch { return {}; }
-  if (typeof used !== 'number' || !Number.isFinite(used) || typeof size !== 'number' || !Number.isFinite(size) || size <= 0) return {};
+  try {
+    if (typeof meter?.contextPressure === 'function') {
+      const projected = meter.contextPressure(session)?.projectedTokens;
+      used = usable(projected) ? projected : undefined;
+    } else if (typeof meter?.measure === 'function') {
+      const measured = meter.measure(session)?.totalTokens;
+      used = usable(measured) ? measured : undefined;
+    }
+  } catch { return {}; }
+  if (used === undefined || used > size) return {};
   return { used, size };
 }
 
