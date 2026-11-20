@@ -1,5 +1,10 @@
 # 更新说明
 
+## 0.2.27 — 已发布（GitHub Release）
+
+- **包简介重写**：原先 `package.json` 的 description 把 0.2.9 以来每个版本的修复都堆在一起（2.8 KB），在 DSH 插件市场里显得像变更日志。现在只留「它是什么」与「怎么装、配哪个桌宠版本」，逐版改动统一看本文件
+- 无代码改动，行为与 0.2.26 完全一致；`dist/index.cjs` 未变动
+
 ## 0.2.26 — 已发布（GitHub Release）
 
 - **新增 `AUTO_FOLLOW=0` 环境变量开关，关掉自动跳会话（discussion [#19](https://github.com/Pal-AI-Lab/cortico-extensions/discussions/19) @z-o-n-e 的请求）**：默认不变（人在哪说话、桌宠就跟着哪条会话，`forceOwner` 会清 pin）；设 `AUTO_FOLLOW=0` 或 `AUTO_FOLLOW=false` 后，人在别的会话里说话不再悄悄把归属切过去。桌宠**显式** `pick` 仍然生效（那是通过桌宠面板做出的选择，和 pin 同级）；agent/created 的"最新会话成为 owner"逻辑保持不变（那是一个新会话诞生的强信号，不是被动跟随）

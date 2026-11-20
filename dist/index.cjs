@@ -4596,7 +4596,7 @@ function pkgDir() {
   return process.cwd();
 }
 function currentVersion() {
-  if ("0.2.26") return "0.2.26";
+  if ("0.2.27") return "0.2.27";
   try {
     const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path3.join)(pkgDir(), "package.json"), "utf8"));
     return pkg.version ?? "0.0.0-dev";
