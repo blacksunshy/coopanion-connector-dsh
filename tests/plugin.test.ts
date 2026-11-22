@@ -321,6 +321,59 @@ describe('the upgrade route on a Host that stores copies (issue #8)', () => {
   }, 7_000);
 });
 
+describe('a hot reload hands the Host its routes back (duplicate exact route)', () => {
+  it('releases every route and upgrade before the next apply registers them again', () => {
+    // A desktop reload — an update, a disable/enable, a crash-recovery restart — starts the next
+    // activation while the Host still holds the previous one's rows. The route table is global and
+    // `register()` throws on a duplicate `(kind, path)`, so an activation that keeps no disposers
+    // makes the reload die on the first path it re-adds: `/coopanion/update` was where it happened,
+    // and the pet was left without its socket.
+    const routes = new Map<string, unknown>();
+    const scopedEffects: Array<() => void> = [];
+    const context = (): Record<string, unknown> => ({
+      inject(_names: string[], callback: (scoped: unknown) => void) {
+        callback({
+          webServer: {
+            register(route: { kind: string; path: string }) {
+              const key = `${route.kind}:${route.path}`;
+              if (routes.has(key)) throw new Error(`webserver: duplicate ${route.kind} route "${route.path}"`);
+              routes.set(key, route);
+              return () => { routes.delete(key); };
+            },
+            registerUpgrade(route: { path: string }) {
+              const key = `upgrade:${route.path}`;
+              if (routes.has(key)) throw new Error(`webserver: duplicate upgrade route "${route.path}"`);
+              routes.set(key, route);
+              return () => { routes.delete(key); };
+            },
+          },
+          effect(callback: () => void | (() => void)) {
+            const cleanup = callback();
+            if (typeof cleanup === 'function') scopedEffects.push(cleanup);
+          },
+          get() { return undefined; },
+        });
+      },
+      effect(callback: () => void | (() => void)) { callback(); },
+      on() { return () => {}; },
+      get() { return undefined; },
+    });
+
+    (plugin as { apply(ctx: unknown): void }).apply(context());
+    const registered = [...routes.keys()].sort();
+    expect(registered).toContain('exact:/coopanion/update');
+    expect(registered).toContain(`upgrade:${PET_PATH}`);
+
+    // What cordis does when the activation ends — the step that used to leave every route behind.
+    for (const cleanup of scopedEffects.splice(0)) cleanup();
+    expect([...routes.keys()]).toEqual([]);
+
+    // The next activation must find every path free, and mount the same set again.
+    (plugin as { apply(ctx: unknown): void }).apply(context());
+    expect([...routes.keys()].sort()).toEqual(registered);
+  });
+});
+
 describe('a conversation the pet asks DSH to start', () => {
   it('is created in the owning Workspace and handed to the pet', async () => {
     const requests: Array<Record<string, unknown>> = [];

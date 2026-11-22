@@ -653,6 +653,12 @@ export default {
     // missing service instead of leaving only the prove-load line behind.
     try {
     root.inject(['webServer'], (scoped) => {
+      /**
+       * The activation's teardown, assigned as soon as the heal interval exists. Declared outside
+       * the `try` below because the `catch` runs it too, to hand back routes and timers when init
+       * fails partway through.
+       */
+      let teardown: (() => void) | undefined;
       try {
       // One rescan at a time. DSH desktop hosts do not always re-emit `agent/created` for sessions
       // opened before the plugin loaded, so the registry is topped up at start and again whenever a
@@ -1061,16 +1067,69 @@ export default {
           return null;
         }
       };
+      /**
+       * What this activation must hand back when it ends: every route it added, the heal interval,
+       * the claimed upgrade route, and the pet socket.
+       *
+       * The Host's route table is process-global: `register()` returns the only handle that removes
+       * a row, and it throws on a duplicate `(kind, path)`. Without these disposers a reload — an
+       * update, a disable/enable, a crash-recovery restart — collides on the first path it re-adds,
+       * leaves the new activation half-applied, and takes the pet's routes with it.
+       *
+       * The effect is registered *before* the first route so a failure partway through init still
+       * has a teardown to run. The cleanup used to be registered after every registration instead,
+       * which is how a failed init left the heal interval alive on a dead `scoped` context — and
+       * the first tick after that killed the whole Host process.
+       */
+      const routeDisposers: Array<() => void> = [];
+      /** Read by {@link teardown}; the background update scheduler assigns it later. */
+      let autoTimer: NodeJS.Timeout | null = null;
+      let tornDown = false;
+      scoped.effect(() => () => teardown?.());
+      /** Register a route and keep the Host's disposer, so {@link teardown} can release the path. */
+      const addRoute = (route: Parameters<NonNullable<DshContext['webServer']>['register']>[0]): void => {
+        routeDisposers.push(scoped.webServer!.register(route));
+      };
+
       let disposeUpgrade = claimUpgrade();
       const healRoutes = setInterval(() => {
-        if (holdsUpgrade()) return;
-        log('warn', `upgrade route ${PET_PATH} went missing, re-claiming`);
-        disposeUpgrade = claimUpgrade();
+        try {
+          if (holdsUpgrade()) return;
+          log('warn', `upgrade route ${PET_PATH} went missing, re-claiming`);
+          disposeUpgrade = claimUpgrade();
+        } catch (err) {
+          // A tick that cannot read the web server belongs to an activation that is already gone.
+          // dsh-app-boot treats an uncaught exception as fatal, so an interval that outlived its
+          // context used to take the Host down with it instead of simply stopping.
+          clearInterval(healRoutes);
+          log('warn', `upgrade route healing stopped: ${(err as Error).message}`);
+        }
       }, 5000);
       healRoutes.unref?.();
+      teardown = (): void => {
+        if (tornDown) return;
+        tornDown = true;
+        clearInterval(healRoutes);
+        disposeUpgrade?.();
+        disposeUpgrade = null;
+        // Reverse registration order: the routes leave the way they arrived.
+        for (const dispose of routeDisposers.splice(0).reverse()) {
+          try {
+            dispose();
+          } catch {
+            // the Host already dropped the row; there is nothing left to release
+          }
+        }
+        pet.close();
+        hub = null;
+        if (autoTimer) {
+          clearTimeout(autoTimer);
+          autoTimer = null;
+        }
+      };
 
       /** GET — 自更新页面 HTML 界面；POST — 兼容路由，走 performUpdate。 */
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/update',
         handler: async (req, res) => {
@@ -1089,7 +1148,7 @@ export default {
         },
       });
       /** POST — 实际执行自更新；UI 和脚本都调这个。 */
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/do-update',
         handler: async (_req, res) => { await handleDoUpdate(res); },
@@ -1110,7 +1169,7 @@ export default {
       }
 
       // A read-only view for the pet page and for hand-checking the bridge without a socket.
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/status',
         handler: (req, res) => {
@@ -1148,7 +1207,7 @@ export default {
        * Toggle auto-forward on/off. When the pet is connected it also gets a notice so it knows
        * the gate has moved — honest epistemology: state changes announce themselves.
        */
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/forward',
         handler: (req, res) => {
@@ -1187,7 +1246,7 @@ export default {
        * person merely switches tabs (no session/event, no agent/created for already-open ones),
        * so passive auto-follow cannot see silent navigation — the picker replaces mind-reading.
        */
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/sessions',
         handler: (_req, res) => {
@@ -1205,7 +1264,7 @@ export default {
        * `{id, pin:false}`, which moves without pinning). Refuses sessions that are not live or
        * are subagents; the pet shows the refusal instead of guessing.
        */
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/owner',
         handler: (req, res) => {
@@ -1251,7 +1310,7 @@ export default {
         },
       });
       // Check if a newer release is available on GitHub. Caches result for status + auto-notice.
-      scoped.webServer!.register({
+      addRoute({
         kind: 'exact',
         path: '/coopanion/check-update',
         handler: async (_req, res) => {
@@ -1275,7 +1334,6 @@ export default {
 
       // 后台定时检查：Host 起来 30s 后第一次跑，之后每 30 min 一次。
       // 默认关闭，设 AUTO_UPDATE_CHECK=1 才启动 — 用户没显式授权的情况下不主动连 GitHub。
-      let autoTimer: NodeJS.Timeout | null = null;
       const schedule = (): void => {
         autoTimer = setTimeout(async () => {
           try {
@@ -1302,13 +1360,6 @@ export default {
       };
       if (AUTO_CHECK_ENABLED) schedule();
 
-      scoped.effect(() => () => {
-        clearInterval(healRoutes);
-        disposeUpgrade?.();
-        pet.close();
-        hub = null;
-        if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
-      });
       log('info', `bridge listening on ${PET_PATH}`);
       const listening = probeListeningAddress(scoped.webServer);
       logLine('routes-registered', { petPath: PET_PATH, address: listening });
@@ -1321,6 +1372,10 @@ export default {
       } catch (err) {
         // Log but do not rethrow: a partial route registration is better than taking the whole
         // plugin (and the Host's activation) down. The `webserver-init-failed` line is the trace.
+        // Hand back whatever this activation did manage to add before it failed, so a retry — or
+        // the next reload — starts against a clean route table instead of colliding with the
+        // leftovers of a half-applied init.
+        teardown?.();
         logLine('webserver-init-failed', { error: (err as Error).message });
       }
     });

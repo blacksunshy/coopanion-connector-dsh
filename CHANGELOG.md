@@ -1,5 +1,11 @@
 # 更新说明
 
+## 0.2.29 — 未发布
+
+- **修掉热重载时的 `duplicate exact route "/coopanion/update"`**：`webServer.register()` 返回的 disposer 现在全部保存（7 条 exact 路由 + pet 的 upgrade 路由），激活结束时一起归还给 Host；清理 effect 提前到第一条路由之前注册，初始化失败也会执行
+- **修掉由此引发的宿主崩溃**：`healRoutes` 定时器在 scoped context 失活后不再抛未捕获异常（此前会让 `dsh-app-boot` 以 exit 7 结束整个 Host）
+- 测试：`tsc --noEmit` 通过；`vitest` 127 passed，新增回归测试（同一张 Host 路由表上连续 `apply` 两次，第一次清理后路由表为空、第二次能重新挂满）；另有一条 `auto-follow` 测试在**未打补丁的 main** 上同样失败，与本补丁无关。`dist/index.cjs` 已按当前 main 源码重建，`verify:dist` 通过
+
 ## 0.2.28 — 已发布（GitHub Release）
 
 - **`turn-end` 的占用数字改读 DSH 自己的 `contextPressure`（issue [#17](https://github.com/blacksunshy/coopanion-connector-dsh/issues/17)）**：此前读 `tokenMeter.measure().totalTokens`，那是会话原始 transcript 的长度。代理模型在上游折叠历史时，transcript 会比实际发出的 prompt 长得多——实测 1.36M tokens 对 1M 窗口、真实占用只有 12.5%，桌宠据此把刚开的会话交接掉了。现在优先取 `contextPressure(session).projectedTokens`（DSH 自己决定压缩时用的就是它），只有旧 Host 没有 `contextPressure` 时才退回 `measure()`
