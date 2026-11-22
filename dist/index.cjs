@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js
+// node_modules/ws/lib/constants.js
 var require_constants = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/constants.js"(exports2, module2) {
+  "node_modules/ws/lib/constants.js"(exports2, module2) {
     "use strict";
     var BINARY_TYPES = ["nodebuffer", "arraybuffer", "fragments"];
     var hasBlob = typeof Blob !== "undefined";
@@ -57,9 +57,9 @@ var require_constants = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js
+// node_modules/ws/lib/buffer-util.js
 var require_buffer_util = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/buffer-util.js"(exports2, module2) {
+  "node_modules/ws/lib/buffer-util.js"(exports2, module2) {
     "use strict";
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
@@ -132,9 +132,9 @@ var require_buffer_util = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js
+// node_modules/ws/lib/limiter.js
 var require_limiter = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/limiter.js"(exports2, module2) {
+  "node_modules/ws/lib/limiter.js"(exports2, module2) {
     "use strict";
     var kDone = /* @__PURE__ */ Symbol("kDone");
     var kRun = /* @__PURE__ */ Symbol("kRun");
@@ -182,9 +182,9 @@ var require_limiter = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js
+// node_modules/ws/lib/permessage-deflate.js
 var require_permessage_deflate = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
+  "node_modules/ws/lib/permessage-deflate.js"(exports2, module2) {
     "use strict";
     var zlib = require("zlib");
     var bufferUtil = require_buffer_util();
@@ -565,9 +565,9 @@ var require_permessage_deflate = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js
+// node_modules/ws/lib/validation.js
 var require_validation = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/validation.js"(exports2, module2) {
+  "node_modules/ws/lib/validation.js"(exports2, module2) {
     "use strict";
     var { isUtf8 } = require("buffer");
     var { hasBlob } = require_constants();
@@ -766,9 +766,9 @@ var require_validation = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js
+// node_modules/ws/lib/receiver.js
 var require_receiver = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/receiver.js"(exports2, module2) {
+  "node_modules/ws/lib/receiver.js"(exports2, module2) {
     "use strict";
     var { Writable } = require("stream");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -1389,9 +1389,9 @@ var require_receiver = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js
+// node_modules/ws/lib/sender.js
 var require_sender = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/sender.js"(exports2, module2) {
+  "node_modules/ws/lib/sender.js"(exports2, module2) {
     "use strict";
     var { Duplex } = require("stream");
     var { randomFillSync } = require("crypto");
@@ -1882,9 +1882,9 @@ var require_sender = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js
+// node_modules/ws/lib/event-target.js
 var require_event_target = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/event-target.js"(exports2, module2) {
+  "node_modules/ws/lib/event-target.js"(exports2, module2) {
     "use strict";
     var { kForOnEventAttribute, kListener } = require_constants();
     var kCode = /* @__PURE__ */ Symbol("kCode");
@@ -2111,9 +2111,9 @@ var require_event_target = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js
+// node_modules/ws/lib/extension.js
 var require_extension = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/extension.js"(exports2, module2) {
+  "node_modules/ws/lib/extension.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function push(dest, name, elem) {
@@ -2264,9 +2264,9 @@ var require_extension = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js
+// node_modules/ws/lib/websocket.js
 var require_websocket = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var https = require("https");
@@ -3173,9 +3173,9 @@ var require_websocket = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js
+// node_modules/ws/lib/stream.js
 var require_stream = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/stream.js"(exports2, module2) {
+  "node_modules/ws/lib/stream.js"(exports2, module2) {
     "use strict";
     var WebSocket2 = require_websocket();
     var { Duplex } = require("stream");
@@ -3271,9 +3271,9 @@ var require_stream = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js
+// node_modules/ws/lib/subprotocol.js
 var require_subprotocol = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/subprotocol.js"(exports2, module2) {
+  "node_modules/ws/lib/subprotocol.js"(exports2, module2) {
     "use strict";
     var { tokenChars } = require_validation();
     function parse(header) {
@@ -3316,9 +3316,9 @@ var require_subprotocol = __commonJS({
   }
 });
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js
+// node_modules/ws/lib/websocket-server.js
 var require_websocket_server = __commonJS({
-  "node_modules/.pnpm/ws@8.22.0/node_modules/ws/lib/websocket-server.js"(exports2, module2) {
+  "node_modules/ws/lib/websocket-server.js"(exports2, module2) {
     "use strict";
     var EventEmitter = require("events");
     var http = require("http");
@@ -3736,7 +3736,7 @@ module.exports = __toCommonJS(index_exports);
 var import_node_crypto = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 
-// node_modules/.pnpm/ws@8.22.0/node_modules/ws/wrapper.mjs
+// node_modules/ws/wrapper.mjs
 var import_stream = __toESM(require_stream(), 1);
 var import_extension = __toESM(require_extension(), 1);
 var import_permessage_deflate = __toESM(require_permessage_deflate(), 1);
@@ -5052,6 +5052,7 @@ var plugin_default = {
     };
     try {
       root.inject(["webServer"], (scoped) => {
+        let teardown;
         try {
           let rescanning = null;
           const rescan = () => {
@@ -5343,14 +5344,45 @@ var plugin_default = {
               return null;
             }
           };
+          const routeDisposers = [];
+          let autoTimer = null;
+          let tornDown = false;
+          scoped.effect(() => () => teardown?.());
+          const addRoute = (route) => {
+            routeDisposers.push(scoped.webServer.register(route));
+          };
           let disposeUpgrade = claimUpgrade();
           const healRoutes = setInterval(() => {
-            if (holdsUpgrade()) return;
-            log("warn", `upgrade route ${PET_PATH} went missing, re-claiming`);
-            disposeUpgrade = claimUpgrade();
+            try {
+              if (holdsUpgrade()) return;
+              log("warn", `upgrade route ${PET_PATH} went missing, re-claiming`);
+              disposeUpgrade = claimUpgrade();
+            } catch (err) {
+              clearInterval(healRoutes);
+              log("warn", `upgrade route healing stopped: ${err.message}`);
+            }
           }, 5e3);
           healRoutes.unref?.();
-          scoped.webServer.register({
+          teardown = () => {
+            if (tornDown) return;
+            tornDown = true;
+            clearInterval(healRoutes);
+            disposeUpgrade?.();
+            disposeUpgrade = null;
+            for (const dispose of routeDisposers.splice(0).reverse()) {
+              try {
+                dispose();
+              } catch {
+              }
+            }
+            pet.close();
+            hub = null;
+            if (autoTimer) {
+              clearTimeout(autoTimer);
+              autoTimer = null;
+            }
+          };
+          addRoute({
             kind: "exact",
             path: "/coopanion/update",
             handler: async (req, res) => {
@@ -5368,7 +5400,7 @@ var plugin_default = {
               res.end(JSON.stringify({ ok: false, error: "use GET for the UI or POST for the update" }));
             }
           });
-          scoped.webServer.register({
+          addRoute({
             kind: "exact",
             path: "/coopanion/do-update",
             handler: async (_req, res) => {
@@ -5386,7 +5418,7 @@ var plugin_default = {
               log("warn", `self-update failed: ${result.error}`);
             }
           }
-          scoped.webServer.register({
+          addRoute({
             kind: "exact",
             path: "/coopanion/status",
             handler: (req, res) => {
@@ -5418,7 +5450,7 @@ var plugin_default = {
               }));
             }
           });
-          scoped.webServer.register({
+          addRoute({
             kind: "exact",
             path: "/coopanion/forward",
             handler: (req, res) => {
@@ -5453,7 +5485,7 @@ var plugin_default = {
               });
             }
           });
-          scoped.webServer.register({
+          addRoute({
             kind: "exact",
             path: "/coopanion/sessions",
             handler: (_req, res) => {
@@ -5465,7 +5497,7 @@ var plugin_default = {
               }));
             }
           });
-          scoped.webServer.register({
+          addRoute({
             kind: "exact",
             path: "/coopanion/owner",
             handler: (req, res) => {
@@ -5512,7 +5544,7 @@ var plugin_default = {
               });
             }
           });
-          scoped.webServer.register({
+          addRoute({
             kind: "exact",
             path: "/coopanion/check-update",
             handler: async (_req, res) => {
@@ -5532,7 +5564,6 @@ var plugin_default = {
               res.end(JSON.stringify(result));
             }
           });
-          let autoTimer = null;
           const schedule = () => {
             autoTimer = setTimeout(async () => {
               try {
@@ -5558,22 +5589,13 @@ var plugin_default = {
             autoTimer.unref?.();
           };
           if (AUTO_CHECK_ENABLED) schedule();
-          scoped.effect(() => () => {
-            clearInterval(healRoutes);
-            disposeUpgrade?.();
-            pet.close();
-            hub = null;
-            if (autoTimer) {
-              clearTimeout(autoTimer);
-              autoTimer = null;
-            }
-          });
           log("info", `bridge listening on ${PET_PATH}`);
           const listening = probeListeningAddress(scoped.webServer);
           logLine("routes-registered", { petPath: PET_PATH, address: listening });
           debug("apply-done", { petPath: PET_PATH, hasWebServer: true });
           void rescan();
         } catch (err) {
+          teardown?.();
           logLine("webserver-init-failed", { error: err.message });
         }
       });
